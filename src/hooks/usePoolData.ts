@@ -18,10 +18,11 @@ export function usePoolData(chainId: number) {
   const [minTvl, setMinTvl] = useState<number>(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const isManualRefresh = useRef(false);
+  const poolsRef = useRef<PoolData[]>([]);
 
   const fetchData = useCallback(async (manual = false) => {
     isManualRefresh.current = manual;
-    const hadPreviousData = pools.length > 0;
+    const hadPreviousData = poolsRef.current.length > 0;
 
     // Only show full loading spinner on first load or manual refresh with no data
     if (!hadPreviousData) {
@@ -39,6 +40,7 @@ export function usePoolData(chainId: number) {
         enriched = result.pools;
       }
 
+      poolsRef.current = enriched;
       setPools(enriched);
       setLastUpdate(new Date());
       setStatus('success');
@@ -64,6 +66,7 @@ export function usePoolData(chainId: number) {
         setError(msg);
         setStatus('error');
         if (manual) {
+          poolsRef.current = [];
           setPools([]);
         }
       }
@@ -72,6 +75,7 @@ export function usePoolData(chainId: number) {
   }, [chainId]);
 
   useEffect(() => {
+    poolsRef.current = [];
     setPools([]);
     setError(null);
     setWarnings([]);

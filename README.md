@@ -35,10 +35,10 @@ Copy `.env.example` to `.env` and customize if needed. RPC endpoints are used bo
 ## Data Sources
 
 ### Pool Discovery
-Pool data is sourced from **DexScreener API** (`api.dexscreener.com/latest/dex/tokens/{addr}`):
-- Token-based discovery using known native/stablecoin tokens per chain
-- BSC: WBNB, USDT, USDC
-- Robinhood: WETH, USDG, VIRTUAL, UP
+Pool data is sourced from **DexScreener API** using two complementary strategies:
+1. **Token-based** (`/latest/dex/tokens/{addr}`): discovers pools by known native/stablecoin tokens per chain — BSC: WBNB, USDT, USDC; Robinhood: WETH, USDG, VIRTUAL, UP
+2. **Search-based** (`/latest/dex/search?q=...`): keyword queries for major pairs to surface V3/V4 pools that token-only discovery misses
+- Results are deduplicated by pair address and merged
 - Returns 24h volume, TVL (liquidity), transaction counts, and price data
 - Sequential requests with 200ms throttle + retry with exponential backoff on 429/5xx
 
@@ -68,7 +68,7 @@ Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
 
 ### Known Gaps
 - V4 pools may not appear if DexScreener hasn't indexed them yet (especially new Pons-graduated meme pools)
-- UP33 pools on Robinhood may show with a generic dex name if DexScreener uses a different `dexId` than expected
+- UP33 pools on Robinhood are matched from DexScreener dexIds `up`, `up_*`, `up33`, `aerodrome`, and `velodrome`
 - On-chain fee reads fail silently if RPC is down — those pools show "—" for fee rate and estimated fee
 - Trade count is buys + sells from DexScreener 24h window
 - Data auto-refreshes every 30 seconds
@@ -106,7 +106,7 @@ Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
 npm run dev      # Dev server
 npm run build    # Production build
 npm run preview  # Preview production build
-npm test         # Run tests (57 tests)
+npm test         # Run tests (59 tests)
 ```
 
 ## Tech Stack

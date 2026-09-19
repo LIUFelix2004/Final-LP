@@ -47,6 +47,14 @@ describe('mapDexName', () => {
     expect(mapDexName('up33_slipstream')).toBe('UP33');
   });
 
+  it('maps bare "up" dexId to UP33', () => {
+    expect(mapDexName('up')).toBe('UP33');
+  });
+
+  it('maps "up_cl" to UP33', () => {
+    expect(mapDexName('up_cl')).toBe('UP33');
+  });
+
   it('maps aerodrome-like to UP33', () => {
     expect(mapDexName('aerodrome_v2')).toBe('UP33');
   });

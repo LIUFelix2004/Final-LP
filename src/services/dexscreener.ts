@@ -37,6 +37,11 @@ const DISCOVERY_TOKENS: Record<number, string[]> = {
   ],
 };
 
+const SEARCH_QUERIES: Record<number, string[]> = {
+  56: ['WBNB USDT', 'CAKE BNB', 'USDC USDT'],
+  4663: ['WETH USDG', 'UP WETH', 'VIRTUAL WETH'],
+};
+
 export class FetchError extends Error {
   statusCode: number | undefined;
   retriable: boolean;
@@ -104,7 +109,7 @@ export function mapDexName(dexId: string): string {
   if (id.startsWith('sushiswap')) return 'SushiSwap';
   if (id.startsWith('thena')) return 'Thena';
   if (id.startsWith('biswap')) return 'BiSwap';
-  if (id.includes('up33') || id.includes('aerodrome') || id.includes('velodrome')) return 'UP33';
+  if (id === 'up' || id.startsWith('up_') || id.includes('up33') || id.includes('aerodrome') || id.includes('velodrome')) return 'UP33';
   return dexId;
 }
 
@@ -167,9 +172,34 @@ export async function fetchTopPools(chainId: number): Promise<FetchResult> {
     }
   }
 
-  if (succeeded === 0 && tokens.length > 0) {
+  // Strategy 2: Search-based discovery to surface V3/V4 pools
+  const searchQueries = SEARCH_QUERIES[chainId] || [];
+  for (const query of searchQueries) {
+    try {
+      const resp = await fetchWithRetry(
+        `${DEXSCREENER_API}/latest/dex/search?q=${encodeURIComponent(query)}`,
+      );
+      const data = await resp.json();
+      const pairs: DexScreenerPair[] = (data.pairs || []).filter(
+        (p: DexScreenerPair) => p.chainId === slug,
+      );
+      for (const p of pairs) {
+        if (!seen.has(p.pairAddress)) {
+          seen.add(p.pairAddress);
+          allPairs.push(p);
+        }
+      }
+      succeeded++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`Search "${query}": ${msg}`);
+    }
+    await sleep(200);
+  }
+
+  if (succeeded === 0 && (tokens.length > 0 || searchQueries.length > 0)) {
     throw new FetchError(
-      `All ${tokens.length} token fetches failed: ${errors.join('; ')}`,
+      `All fetches failed: ${errors.join('; ')}`,
       undefined,
       true,
     );
