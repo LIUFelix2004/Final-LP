@@ -50,3 +50,8 @@ export function computeFeeTvlRatio(feeUsd: number | null, tvlUsd: number | null)
   if (feeUsd === null || tvlUsd === null || tvlUsd === 0) return null;
   return (feeUsd / tvlUsd) * 100;
 }
+
+export function estimateFeeFromBps(volumeUsd: number | null, feeRatePercent: number): number | null {
+  if (volumeUsd === null || volumeUsd === 0) return null;
+  return volumeUsd * (feeRatePercent / 100);
+}

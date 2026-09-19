@@ -12,6 +12,7 @@ function App() {
     pools,
     loading,
     error,
+    warnings,
     lastUpdate,
     sortField,
     sortDir,
@@ -20,6 +21,7 @@ function App() {
     setMinTvl,
     refresh,
     totalCount,
+    isEmpty,
   } = usePoolData(chainId);
 
   return (
@@ -33,12 +35,20 @@ function App() {
         onMinTvlChange={setMinTvl}
       />
       <ChainSwitcher activeChainId={chainId} onSwitch={setChainId} />
+
       {error && (
         <div className="error-bar">
-          ⚠️ {error}
+          <span>⚠️ {error}</span>
           <button onClick={refresh}>重试</button>
         </div>
       )}
+
+      {warnings.length > 0 && !error && (
+        <div className="warning-bar">
+          <span>⚠️ {warnings[0]}{warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ''}</span>
+        </div>
+      )}
+
       {loading && pools.length === 0 ? (
         <div className="loading-state">
           <div className="spinner" />
@@ -57,6 +67,8 @@ function App() {
             sortDir={sortDir}
             onSort={handleSort}
             chainId={chainId}
+            isEmpty={isEmpty}
+            hasError={!!error}
           />
         </>
       )}

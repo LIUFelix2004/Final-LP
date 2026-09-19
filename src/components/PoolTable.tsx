@@ -9,6 +9,8 @@ interface Props {
   sortDir: SortDirection;
   onSort: (field: SortField) => void;
   chainId: number;
+  isEmpty: boolean;
+  hasError: boolean;
 }
 
 const DEX_COLORS: Record<string, string> = {
@@ -17,6 +19,7 @@ const DEX_COLORS: Record<string, string> = {
   SushiSwap: '#FA52A0',
   Thena: '#8B5CF6',
   BiSwap: '#1263F1',
+  UP33: '#10B981',
 };
 
 const VERSION_COLORS: Record<string, string> = {
@@ -30,16 +33,17 @@ interface ColumnDef {
   label: string;
   sortable: boolean;
   align?: 'left' | 'right' | 'center';
+  title?: string;
 }
 
 const COLUMNS: ColumnDef[] = [
   { key: 'rank', label: '#', sortable: false, align: 'center' },
   { key: 'pair', label: '交易对', sortable: false, align: 'left' },
   { key: 'priceUsd', label: '价格', sortable: true, align: 'right' },
-  { key: 'feeRate', label: '费率', sortable: true, align: 'right' },
-  { key: 'feeUsd', label: 'Fee (24h)', sortable: true, align: 'right' },
+  { key: 'feeRate', label: '费率', sortable: true, align: 'right', title: 'V2: fixed rate; V3/CL: on-chain fee(); V4: pool key fee' },
+  { key: 'feeUsd', label: 'Fee (24h)*', sortable: true, align: 'right', title: 'Estimated: 24h Volume × Fee Rate' },
   { key: 'tvlUsd', label: 'TVL', sortable: true, align: 'right' },
-  { key: 'feeTvlRatio', label: 'Fee/TVL', sortable: true, align: 'right' },
+  { key: 'feeTvlRatio', label: 'Fee/TVL', sortable: true, align: 'right', title: 'Estimated Fee ÷ TVL' },
   { key: 'volumeUsd', label: 'Volume (24h)', sortable: true, align: 'right' },
   { key: 'txCount', label: '交易数', sortable: true, align: 'right' },
   { key: 'actions', label: '操作', sortable: false, align: 'center' },
@@ -61,8 +65,14 @@ function copyToClipboard(text: string) {
   });
 }
 
-export function PoolTable({ pools, sortField, sortDir, onSort, chainId }: Props) {
+export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty, hasError }: Props) {
   const chain = CHAINS[chainId];
+
+  const emptyMessage = hasError
+    ? '获取数据失败，请点击重试'
+    : isEmpty
+    ? '该链暂无可用池数据'
+    : '暂无数据';
 
   return (
     <div className="table-wrapper">
@@ -74,6 +84,7 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId }: Props)
                 key={col.key}
                 className={`${col.align || 'left'} ${col.sortable ? 'sortable' : ''}`}
                 onClick={() => col.sortable && onSort(col.key as SortField)}
+                title={col.title}
               >
                 {col.label}
                 {col.sortable && (
@@ -87,7 +98,7 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId }: Props)
           {pools.length === 0 ? (
             <tr>
               <td colSpan={COLUMNS.length} className="empty-state">
-                暂无数据
+                {emptyMessage}
               </td>
             </tr>
           ) : (
@@ -141,6 +152,11 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId }: Props)
           )}
         </tbody>
       </table>
+      {pools.length > 0 && (
+        <div className="table-footer">
+          * Fee = estimated 24h Volume × Fee Rate. V3/CL fee rates read on-chain when RPC available.
+        </div>
+      )}
     </div>
   );
 }

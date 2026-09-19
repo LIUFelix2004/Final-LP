@@ -13,7 +13,7 @@ export const CHAINS: Record<number, ChainConfig> = {
     chainId: 4663,
     name: 'Robinhood Chain',
     shortName: 'Robinhood',
-    rpcUrl: import.meta.env.VITE_ROBINHOOD_RPC || 'https://rpc.robinhoodchain.com',
+    rpcUrl: import.meta.env.VITE_ROBINHOOD_RPC || 'https://rpc.mainnet.chain.robinhood.com',
     explorerUrl: 'https://explorer.robinhoodchain.com',
     nativeCurrency: 'ETH',
   },

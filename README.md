@@ -2,6 +2,8 @@
 
 A dark-mode real-time LP fee leaderboard for hunting high-fee liquidity pools across chains.
 
+**Requires Node.js >= 22** (vitest/jsdom need it).
+
 ## Quick Start
 
 ```bash
@@ -15,10 +17,10 @@ Open http://localhost:5173
 
 | Variable | Default | Description |
 |---|---|---|
-| `VITE_BSC_RPC` | `https://bsc-dataseed1.binance.org` | BSC RPC endpoint |
-| `VITE_ROBINHOOD_RPC` | `https://rpc.robinhoodchain.com` | Robinhood Chain RPC endpoint |
+| `VITE_BSC_RPC` | `https://bsc-dataseed1.binance.org` | BSC RPC endpoint (used for on-chain V3 fee reads) |
+| `VITE_ROBINHOOD_RPC` | `https://rpc.mainnet.chain.robinhood.com` | Robinhood Chain RPC endpoint |
 
-Copy `.env.example` to `.env` and customize if needed.
+Copy `.env.example` to `.env` and customize if needed. RPC endpoints are used both for on-chain fee-tier reads (V3/CL pools) and as public fallbacks.
 
 ## Supported Chains
 
@@ -32,19 +34,42 @@ Copy `.env.example` to `.env` and customize if needed.
 
 ## Data Sources
 
-Pool data is sourced from **DexScreener API** (`api.dexscreener.com`):
-- Token-based discovery using known stablecoins and native tokens per chain
-- 24h volume, liquidity (TVL), transaction counts, and price data
+### Pool Discovery
+Pool data is sourced from **DexScreener API** (`api.dexscreener.com/latest/dex/tokens/{addr}`):
+- Token-based discovery using known native/stablecoin tokens per chain
+- BSC: WBNB, USDT, USDC
+- Robinhood: WETH, USDG, VIRTUAL, UP
+- Returns 24h volume, TVL (liquidity), transaction counts, and price data
+- Sequential requests with 200ms throttle + retry with exponential backoff on 429/5xx
 
-### Fee Estimation
-- **V2 pools**: Fee = Volume x fee rate (PancakeSwap 0.25%, Uniswap/others 0.30%)
-- **V3/CL pools**: Fee rate shows "—" because V3 has variable fee tiers that DexScreener doesn't expose directly; Fee USD is therefore also "—"
-- **Fee/TVL ratio**: computed as `(Fee USD / TVL) x 100`
+### Fee Rate Sources
+- **V2 pools**: Fixed fee rate from dexId (PancakeSwap 0.25%, Uniswap/others 0.30%, BiSwap 0.10%)
+- **V3 pools**: On-chain `fee()` call via RPC multicall (Uniswap V3 returns fee in hundredths of bip, e.g. 3000 = 0.30%)
+- **UP33 CL (Slipstream)**: On-chain `tickSpacing()` on pool + `tickSpacingToFee(ts)` on factory via RPC
+- **V4 pools**: Fee rate shown when DexScreener indexes them and on-chain read succeeds; otherwise "—"
+- Fallback: "—" when RPC is unreachable or fee cannot be determined
+
+### Fee Estimation Formula
+```
+Fee (24h) = 24h Volume x (Fee Rate / 100)
+```
+This is an **estimate** — actual collected fees may differ due to MEV, concentrated liquidity tick ranges, and protocol fee switches. Labeled as "Fee (24h)*" in the UI with a tooltip.
+
+### Fee/TVL Ratio
+```
+Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
+```
+
+## Error Handling
+- **Retry with backoff**: 429 and 5xx responses retry up to 3 times (1s, 2s, 4s delay)
+- **Stale-while-revalidate**: Auto-refresh failures preserve the previous good data; only manual refresh clears stale data
+- **Partial success**: If some token fetches fail, surviving results are shown with a warning
+- **Total failure**: Error bar with retry button; empty state distinguishes "fetch failed" from "zero pools on chain"
 
 ### Known Gaps
-- V3 fee tier per-pool is not available from DexScreener — would need on-chain `fee()` calls to each pool contract
-- V4 pools may not appear if DexScreener hasn't indexed them yet
-- UP33 pools on Robinhood may show as generic dex name if DexScreener uses a different `dexId`
+- V4 pools may not appear if DexScreener hasn't indexed them yet (especially new Pons-graduated meme pools)
+- UP33 pools on Robinhood may show with a generic dex name if DexScreener uses a different `dexId` than expected
+- On-chain fee reads fail silently if RPC is down — those pools show "—" for fee rate and estimated fee
 - Trade count is buys + sells from DexScreener 24h window
 - Data auto-refreshes every 30 seconds
 
@@ -55,22 +80,25 @@ Pool data is sourced from **DexScreener API** (`api.dexscreener.com`):
 | # | Rank (gold/silver/bronze for top 3) |
 | 交易对 | DEX tag + version (V2/V3/V4) + pair symbol |
 | 价格 | USD price (many decimals for meme tokens) |
-| 费率 | Pool fee rate % |
-| Fee (24h) | Estimated 24h fees in USD |
-| TVL | Total value locked |
-| Fee/TVL | Fee-to-TVL ratio % |
-| Volume (24h) | 24h trading volume |
+| 费率 | Pool fee rate %. V2: fixed. V3/CL: from on-chain RPC. |
+| Fee (24h)* | **Estimated** 24h fees = Volume x fee rate |
+| TVL | Total value locked (from DexScreener) |
+| Fee/TVL | Estimated Fee / TVL ratio % |
+| Volume (24h) | 24h trading volume (from DexScreener) |
 | 交易数 | Trade count in 24h |
-| 操作 | Copy address, open block explorer |
+| 操作 | Copy pool address, open block explorer |
 
 ## Features
 - Chain switcher (BSC / Robinhood)
 - Sort by any numeric column (default: Fee descending)
 - Hide low-TVL pools (<$1K toggle)
 - Auto-refresh every 30s + manual refresh button
+- Stale-while-revalidate (failed refresh keeps previous data)
+- Error/retry bar on fetch failure
 - Last update timestamp display
 - Copy pool address to clipboard
 - Block explorer links
+- On-chain V3 fee tier enrichment via RPC
 
 ## Scripts
 
@@ -78,12 +106,13 @@ Pool data is sourced from **DexScreener API** (`api.dexscreener.com`):
 npm run dev      # Dev server
 npm run build    # Production build
 npm run preview  # Preview production build
-npm test         # Run tests
+npm test         # Run tests (57 tests)
 ```
 
 ## Tech Stack
-- Vite + React + TypeScript
-- DexScreener REST API for pool data
+- Vite + React 19 + TypeScript 6
+- [viem](https://viem.sh) for on-chain RPC reads (multicall for V3 fee tiers)
+- DexScreener REST API for pool discovery + market data
 - No wallet connection required (read-only leaderboard)
 
 ## Contract Addresses (Reference)
@@ -91,11 +120,13 @@ npm test         # Run tests
 BSC:
 - PancakeSwap V2 Factory: `0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73`
 - PancakeSwap V3 Factory: `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865`
+- Uniswap V2 Factory: `0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6`
 - Uniswap V3 Factory: `0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7`
 - Uniswap V4 PoolManager: `0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF`
 
 Robinhood:
 - UP33 V2 Factory: `0xFA5429AEBa338BEa2BFcc1b9a889862Ee395bc28`
 - UP33 CL Factory: `0x1ac9dB4a2608ba45D6127B1737949b51Bb54B7F3`
+- Uniswap V2 Factory: `0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f`
 - Uniswap V3 Factory: `0x1f7d7550B1b028f7571E69A784071F0205FD2EfA`
 - Uniswap V4 PoolManager: `0x8366a39CC670B4001A1121B8F6A443A643e40951`

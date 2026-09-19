@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatUsd, formatPrice, formatFeeRate, formatPercent, computeFeeTvlRatio, formatNumber } from './format';
+import { formatUsd, formatPrice, formatFeeRate, formatPercent, computeFeeTvlRatio, formatNumber, estimateFeeFromBps } from './format';
 
 describe('formatUsd', () => {
   it('returns — for null', () => {
@@ -107,5 +107,23 @@ describe('computeFeeTvlRatio', () => {
 
   it('computes large ratio for high-fee/low-tvl pools', () => {
     expect(computeFeeTvlRatio(5000, 1000)).toBeCloseTo(500.0);
+  });
+});
+
+describe('estimateFeeFromBps', () => {
+  it('returns null when volume is null', () => {
+    expect(estimateFeeFromBps(null, 0.30)).toBeNull();
+  });
+
+  it('returns null when volume is 0', () => {
+    expect(estimateFeeFromBps(0, 0.30)).toBeNull();
+  });
+
+  it('computes fee from bps-derived percent: 1M × 0.30% = 3000', () => {
+    expect(estimateFeeFromBps(1_000_000, 0.30)).toBeCloseTo(3000);
+  });
+
+  it('computes fee for 0.01% tier: 1M × 0.01% = 100', () => {
+    expect(estimateFeeFromBps(1_000_000, 0.01)).toBeCloseTo(100);
   });
 });

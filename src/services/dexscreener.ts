@@ -3,7 +3,7 @@ import { computeFeeTvlRatio } from '../utils/format';
 
 const DEXSCREENER_API = 'https://api.dexscreener.com';
 
-interface DexScreenerPair {
+export interface DexScreenerPair {
   chainId: string;
   dexId: string;
   url: string;
@@ -18,12 +18,11 @@ interface DexScreenerPair {
   pairCreatedAt: number;
 }
 
-const CHAIN_SLUG: Record<number, string> = {
+export const CHAIN_SLUG: Record<number, string> = {
   56: 'bsc',
   4663: 'robinhood',
 };
 
-// Known tokens per chain for discovery
 const DISCOVERY_TOKENS: Record<number, string[]> = {
   56: [
     '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', // WBNB
@@ -38,14 +37,67 @@ const DISCOVERY_TOKENS: Record<number, string[]> = {
   ],
 };
 
-function mapDexVersion(dexId: string): 'V2' | 'V3' | 'V4' {
+export class FetchError extends Error {
+  statusCode: number | undefined;
+  retriable: boolean;
+
+  constructor(message: string, statusCode?: number, retriable = false) {
+    super(message);
+    this.name = 'FetchError';
+    this.statusCode = statusCode;
+    this.retriable = retriable;
+  }
+}
+
+async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const resp = await fetch(url);
+      if (resp.ok) return resp;
+
+      if (resp.status === 429 || resp.status >= 500) {
+        lastError = new FetchError(
+          `HTTP ${resp.status} from DexScreener`,
+          resp.status,
+          true,
+        );
+        if (attempt < maxRetries) {
+          await sleep(Math.min(1000 * Math.pow(2, attempt), 8000));
+          continue;
+        }
+      }
+
+      throw new FetchError(
+        `DexScreener returned ${resp.status}`,
+        resp.status,
+        false,
+      );
+    } catch (err) {
+      if (err instanceof FetchError && !err.retriable) throw err;
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < maxRetries) {
+        await sleep(Math.min(1000 * Math.pow(2, attempt), 8000));
+      }
+    }
+  }
+
+  throw lastError ?? new FetchError('All retries exhausted', undefined, false);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export function mapDexVersion(dexId: string): 'V2' | 'V3' | 'V4' {
   const id = dexId.toLowerCase();
   if (id.includes('v4')) return 'V4';
   if (id.includes('v3') || id.includes('cl') || id.includes('slipstream')) return 'V3';
   return 'V2';
 }
 
-function mapDexName(dexId: string): string {
+export function mapDexName(dexId: string): string {
   const id = dexId.toLowerCase();
   if (id.startsWith('pancakeswap')) return 'PancakeSwap';
   if (id.startsWith('uniswap')) return 'Uniswap';
@@ -56,58 +108,78 @@ function mapDexName(dexId: string): string {
   return dexId;
 }
 
-function inferFeeRate(dexId: string): number | null {
+export function inferFeeRateFromDexId(dexId: string): number | null {
   const id = dexId.toLowerCase();
-  if (id.includes('v3') || id.includes('cl') || id.includes('slipstream')) return null; // variable
+  // V3/V4/CL have variable fee tiers — must read on-chain
+  if (id.includes('v3') || id.includes('v4') || id.includes('cl') || id.includes('slipstream')) return null;
   if (id.startsWith('pancakeswap')) return 0.25;
-  if (id.startsWith('uniswap') && !id.includes('v3')) return 0.30;
   if (id.startsWith('biswap')) return 0.10;
   if (id.startsWith('thena')) return 0.30;
   return 0.30; // default V2
 }
 
-function estimateFee(volume: number, feeRate: number | null): number | null {
-  if (feeRate === null || !volume) return null;
-  return volume * (feeRate / 100);
+export function estimateFeeUsd(volumeH24: number, feeRatePercent: number | null): number | null {
+  if (feeRatePercent === null || !volumeH24) return null;
+  return volumeH24 * (feeRatePercent / 100);
 }
 
-export async function fetchTopPools(chainId: number): Promise<PoolData[]> {
+export interface FetchResult {
+  pools: PoolData[];
+  errors: string[];
+  partial: boolean;
+}
+
+export async function fetchTopPools(chainId: number): Promise<FetchResult> {
   const slug = CHAIN_SLUG[chainId];
-  if (!slug) return [];
+  if (!slug) return { pools: [], errors: [`Unknown chain ${chainId}`], partial: false };
 
   const tokens = DISCOVERY_TOKENS[chainId] || [];
   const allPairs: DexScreenerPair[] = [];
   const seen = new Set<string>();
+  const errors: string[] = [];
+  let succeeded = 0;
 
-  // Fetch pairs for each discovery token
-  const fetches = tokens.map(async (token) => {
+  // Throttle: sequential with small delay to avoid 429
+  for (const token of tokens) {
     try {
-      const resp = await fetch(`${DEXSCREENER_API}/latest/dex/tokens/${token}`);
-      if (!resp.ok) return [];
-      const data = await resp.json();
-      return (data.pairs || []).filter(
-        (p: DexScreenerPair) => p.chainId === slug
+      const resp = await fetchWithRetry(
+        `${DEXSCREENER_API}/latest/dex/tokens/${token}`,
       );
-    } catch {
-      return [];
-    }
-  });
-
-  const results = await Promise.all(fetches);
-  for (const pairs of results) {
-    for (const p of pairs) {
-      if (!seen.has(p.pairAddress)) {
-        seen.add(p.pairAddress);
-        allPairs.push(p);
+      const data = await resp.json();
+      const pairs: DexScreenerPair[] = (data.pairs || []).filter(
+        (p: DexScreenerPair) => p.chainId === slug,
+      );
+      for (const p of pairs) {
+        if (!seen.has(p.pairAddress)) {
+          seen.add(p.pairAddress);
+          allPairs.push(p);
+        }
       }
+      succeeded++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`Token ${token.slice(0, 10)}…: ${msg}`);
+    }
+
+    // Small throttle between requests
+    if (tokens.indexOf(token) < tokens.length - 1) {
+      await sleep(200);
     }
   }
 
-  return allPairs
+  if (succeeded === 0 && tokens.length > 0) {
+    throw new FetchError(
+      `All ${tokens.length} token fetches failed: ${errors.join('; ')}`,
+      undefined,
+      true,
+    );
+  }
+
+  const pools = allPairs
     .map((pair): PoolData => {
-      const feeRate = inferFeeRate(pair.dexId);
+      const feeRate = inferFeeRateFromDexId(pair.dexId);
       const vol24 = pair.volume?.h24 ?? 0;
-      const feeUsd = estimateFee(vol24, feeRate);
+      const feeUsd = estimateFeeUsd(vol24, feeRate);
       const tvlUsd = pair.liquidity?.usd ?? null;
       const txCount = pair.txns?.h24
         ? pair.txns.h24.buys + pair.txns.h24.sells
@@ -135,4 +207,10 @@ export async function fetchTopPools(chainId: number): Promise<PoolData[]> {
     })
     .filter((p) => p.tvlUsd !== null && p.tvlUsd > 0)
     .sort((a, b) => (b.feeUsd ?? 0) - (a.feeUsd ?? 0));
+
+  return {
+    pools,
+    errors,
+    partial: errors.length > 0 && succeeded > 0,
+  };
 }
