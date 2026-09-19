@@ -9,6 +9,7 @@ import {
 } from './dexscreener';
 
 describe('mapDexVersion', () => {
+  // Legacy dexId-based detection (fallback)
   it('returns V2 for pancakeswap_v2', () => {
     expect(mapDexVersion('pancakeswap_v2')).toBe('V2');
   });
@@ -31,6 +32,47 @@ describe('mapDexVersion', () => {
 
   it('defaults to V2 for unknown', () => {
     expect(mapDexVersion('some_dex')).toBe('V2');
+  });
+
+  // Labels-based detection (DexScreener actual format)
+  it('returns V3 from labels ["v3"] with bare dexId "pancakeswap"', () => {
+    expect(mapDexVersion('pancakeswap', ['v3'])).toBe('V3');
+  });
+
+  it('returns V2 from labels ["v2"] with bare dexId "pancakeswap"', () => {
+    expect(mapDexVersion('pancakeswap', ['v2'])).toBe('V2');
+  });
+
+  it('returns V3 from labels ["v3"] with bare dexId "uniswap"', () => {
+    expect(mapDexVersion('uniswap', ['v3'])).toBe('V3');
+  });
+
+  it('returns V4 from labels ["v4"] with bare dexId "uniswap"', () => {
+    expect(mapDexVersion('uniswap', ['v4'])).toBe('V4');
+  });
+
+  it('returns V3 from labels ["CL"] for concentrated liquidity', () => {
+    expect(mapDexVersion('up', ['CL'])).toBe('V3');
+  });
+
+  it('returns V3 from labels ["CLMM"] for concentrated liquidity', () => {
+    expect(mapDexVersion('pancakeswap', ['CLMM'])).toBe('V3');
+  });
+
+  it('falls back to dexId when labels is empty', () => {
+    expect(mapDexVersion('uniswap_v3', [])).toBe('V3');
+  });
+
+  it('falls back to dexId when labels is undefined', () => {
+    expect(mapDexVersion('uniswap_v3', undefined)).toBe('V3');
+  });
+
+  it('labels take precedence over dexId', () => {
+    expect(mapDexVersion('pancakeswap_v2', ['v3'])).toBe('V3');
+  });
+
+  it('returns V2 for bare "up" without labels', () => {
+    expect(mapDexVersion('up')).toBe('V2');
   });
 });
 
@@ -91,6 +133,27 @@ describe('inferFeeRateFromDexId', () => {
 
   it('returns 0.10 for BiSwap', () => {
     expect(inferFeeRateFromDexId('biswap_v2')).toBe(0.10);
+  });
+
+  // Labels-based fee rate inference
+  it('returns null for pancakeswap with labels ["v3"]', () => {
+    expect(inferFeeRateFromDexId('pancakeswap', ['v3'])).toBeNull();
+  });
+
+  it('returns 0.25 for pancakeswap with labels ["v2"]', () => {
+    expect(inferFeeRateFromDexId('pancakeswap', ['v2'])).toBe(0.25);
+  });
+
+  it('returns null for uniswap with labels ["v4"]', () => {
+    expect(inferFeeRateFromDexId('uniswap', ['v4'])).toBeNull();
+  });
+
+  it('returns null for "up" with labels ["CL"]', () => {
+    expect(inferFeeRateFromDexId('up', ['CL'])).toBeNull();
+  });
+
+  it('returns 0.30 for "up" without labels (V2 default)', () => {
+    expect(inferFeeRateFromDexId('up')).toBe(0.30);
   });
 });
 

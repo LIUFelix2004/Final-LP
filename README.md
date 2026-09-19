@@ -35,12 +35,25 @@ Copy `.env.example` to `.env` and customize if needed. RPC endpoints are used bo
 ## Data Sources
 
 ### Pool Discovery
-Pool data is sourced from **DexScreener API** using two complementary strategies:
+Pool data is sourced from **DexScreener API** using three complementary strategies:
 1. **Token-based** (`/latest/dex/tokens/{addr}`): discovers pools by known native/stablecoin tokens per chain — BSC: WBNB, USDT, USDC; Robinhood: WETH, USDG, VIRTUAL, UP
-2. **Search-based** (`/latest/dex/search?q=...`): keyword queries for major pairs to surface V3/V4 pools that token-only discovery misses
-- Results are deduplicated by pair address and merged
+2. **Search-based** (`/latest/dex/search?q=...`): keyword queries for major pairs to surface additional V3/V4 pools
+3. **Seed pools** (`/latest/dex/pairs/{chain}/{addr,...}`): known high-liquidity V3 pool addresses fetched directly to guarantee minimum V3 coverage
+- Results are deduplicated by pair address and merged across all strategies
 - Returns 24h volume, TVL (liquidity), transaction counts, and price data
 - Sequential requests with 200ms throttle + retry with exponential backoff on 429/5xx
+
+### Version Detection
+Pool version (V2/V3/V4) is detected from DexScreener's `labels` array (e.g. `["v2"]`, `["v3"]`, `["CL"]`, `["CLMM"]`), with fallback to `dexId` string heuristics. This ensures concentrated liquidity pools are correctly tagged as V3 for on-chain fee enrichment.
+
+### Seed V3 Pool Addresses
+BSC:
+- PancakeSwap V3 USDT/WBNB: `0x36696169C63e42cd08ce11f5deeBbCeBae652050`
+- Uniswap V3 USDT/WBNB: `0x6fe9E9de56356F7eDBfcBB29FAB7cd69471a4869`
+
+Robinhood:
+- Uniswap V3 WETH/USDG: `0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a`
+- Uniswap V3 WETH/PONS: `0x10CC6BD38112cAc182db90B6a71d8Bb5939526bA`
 
 ### Fee Rate Sources
 - **V2 pools**: Fixed fee rate from dexId (PancakeSwap 0.25%, Uniswap/others 0.30%, BiSwap 0.10%)
@@ -67,7 +80,7 @@ Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
 - **Total failure**: Error bar with retry button; empty state distinguishes "fetch failed" from "zero pools on chain"
 
 ### Known Gaps
-- V4 pools may not appear if DexScreener hasn't indexed them yet (especially new Pons-graduated meme pools)
+- V4 pools appear only when DexScreener returns them with `labels: ["v4"]`; as of Sep 2026 DexScreener may not index V4 pools on BSC or Robinhood yet
 - UP33 pools on Robinhood are matched from DexScreener dexIds `up`, `up_*`, `up33`, `aerodrome`, and `velodrome`
 - On-chain fee reads fail silently if RPC is down — those pools show "—" for fee rate and estimated fee
 - Trade count is buys + sells from DexScreener 24h window
@@ -106,7 +119,7 @@ Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
 npm run dev      # Dev server
 npm run build    # Production build
 npm run preview  # Preview production build
-npm test         # Run tests (59 tests)
+npm test         # Run tests (74 tests)
 ```
 
 ## Tech Stack

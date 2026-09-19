@@ -8,6 +8,7 @@ export interface DexScreenerPair {
   dexId: string;
   url: string;
   pairAddress: string;
+  labels?: string[];
   baseToken: { address: string; name: string; symbol: string };
   quoteToken: { address: string; name: string; symbol: string };
   priceUsd: string | null;
@@ -40,6 +41,19 @@ const DISCOVERY_TOKENS: Record<number, string[]> = {
 const SEARCH_QUERIES: Record<number, string[]> = {
   56: ['WBNB USDT', 'CAKE BNB', 'USDC USDT'],
   4663: ['WETH USDG', 'UP WETH', 'VIRTUAL WETH'],
+};
+
+// Known high-liquidity V3/CL pool addresses to seed discovery.
+// DexScreener pair-batch endpoint guarantees these appear with correct labels.
+const SEED_V3_POOLS: Record<number, string[]> = {
+  56: [
+    '0x36696169C63e42cd08ce11f5deeBbCeBae652050', // PancakeSwap V3 USDT/WBNB 0.05%
+    '0x6fe9E9de56356F7eDBfcBB29FAB7cd69471a4869', // Uniswap V3 USDT/WBNB 0.05%
+  ],
+  4663: [
+    '0x69BfaF19C9f377BB306a89aEd9F6B07e2c1a8d9a', // Uniswap V3 WETH/USDG 0.05%
+    '0x10CC6BD38112cAc182db90B6a71d8Bb5939526bA', // Uniswap V3 WETH/PONS
+  ],
 };
 
 export class FetchError extends Error {
@@ -95,7 +109,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export function mapDexVersion(dexId: string): 'V2' | 'V3' | 'V4' {
+export function mapDexVersion(dexId: string, labels?: string[]): 'V2' | 'V3' | 'V4' {
+  if (labels && labels.length > 0) {
+    const joined = labels.map((l) => l.toLowerCase()).join(' ');
+    if (joined.includes('v4')) return 'V4';
+    if (joined.includes('v3') || joined.includes('cl') || joined.includes('clmm')) return 'V3';
+    if (joined.includes('v2')) return 'V2';
+  }
   const id = dexId.toLowerCase();
   if (id.includes('v4')) return 'V4';
   if (id.includes('v3') || id.includes('cl') || id.includes('slipstream')) return 'V3';
@@ -113,10 +133,10 @@ export function mapDexName(dexId: string): string {
   return dexId;
 }
 
-export function inferFeeRateFromDexId(dexId: string): number | null {
+export function inferFeeRateFromDexId(dexId: string, labels?: string[]): number | null {
+  const version = mapDexVersion(dexId, labels);
+  if (version === 'V3' || version === 'V4') return null;
   const id = dexId.toLowerCase();
-  // V3/V4/CL have variable fee tiers — must read on-chain
-  if (id.includes('v3') || id.includes('v4') || id.includes('cl') || id.includes('slipstream')) return null;
   if (id.startsWith('pancakeswap')) return 0.25;
   if (id.startsWith('biswap')) return 0.10;
   if (id.startsWith('thena')) return 0.30;
@@ -197,6 +217,36 @@ export async function fetchTopPools(chainId: number): Promise<FetchResult> {
     await sleep(200);
   }
 
+  // Strategy 3: Seed known V3/CL pool addresses via pair-batch endpoint
+  const seedPools = SEED_V3_POOLS[chainId] || [];
+  if (seedPools.length > 0) {
+    // DexScreener /latest/dex/pairs/{chain}/{addr1,addr2,...} accepts up to 30 addresses
+    const batchSize = 30;
+    for (let i = 0; i < seedPools.length; i += batchSize) {
+      const batch = seedPools.slice(i, i + batchSize);
+      try {
+        const resp = await fetchWithRetry(
+          `${DEXSCREENER_API}/latest/dex/pairs/${slug}/${batch.join(',')}`,
+        );
+        const data = await resp.json();
+        const pairs: DexScreenerPair[] = (data.pairs || []).filter(
+          (p: DexScreenerPair) => p.chainId === slug,
+        );
+        for (const p of pairs) {
+          if (!seen.has(p.pairAddress)) {
+            seen.add(p.pairAddress);
+            allPairs.push(p);
+          }
+        }
+        succeeded++;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`Seed V3 pools: ${msg}`);
+      }
+      await sleep(200);
+    }
+  }
+
   if (succeeded === 0 && (tokens.length > 0 || searchQueries.length > 0)) {
     throw new FetchError(
       `All fetches failed: ${errors.join('; ')}`,
@@ -207,7 +257,7 @@ export async function fetchTopPools(chainId: number): Promise<FetchResult> {
 
   const pools = allPairs
     .map((pair): PoolData => {
-      const feeRate = inferFeeRateFromDexId(pair.dexId);
+      const feeRate = inferFeeRateFromDexId(pair.dexId, pair.labels);
       const vol24 = pair.volume?.h24 ?? 0;
       const feeUsd = estimateFeeUsd(vol24, feeRate);
       const tvlUsd = pair.liquidity?.usd ?? null;
@@ -223,7 +273,7 @@ export async function fetchTopPools(chainId: number): Promise<FetchResult> {
         token0Address: pair.baseToken.address,
         token1Address: pair.quoteToken.address,
         dex: mapDexName(pair.dexId),
-        version: mapDexVersion(pair.dexId),
+        version: mapDexVersion(pair.dexId, pair.labels),
         chainId,
         priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : null,
         feeRate,
