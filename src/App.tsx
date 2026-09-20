@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react';
-import type { PoolData } from './types';
+import { useState, useCallback, useMemo } from 'react';
+import type { PoolData, DiscoveryMode } from './types';
 import { ChainSwitcher } from './components/ChainSwitcher';
+import { DiscoveryToggle } from './components/DiscoveryToggle';
 import { Header } from './components/Header';
 import { PoolTable } from './components/PoolTable';
 import { TimeframeSwitcher } from './components/TimeframeSwitcher';
@@ -10,11 +11,16 @@ import { ToastContainer } from './components/ToastContainer';
 import { usePoolData } from './hooks/usePoolData';
 import { useWatchlist } from './hooks/useWatchlist';
 import { useAlerts } from './hooks/useAlerts';
+import { isGmgnConfigured, loadGmgnSettings } from './services/gmgn';
 import { DEFAULT_CHAIN_ID } from './config/chains';
 import './App.css';
 
 function App() {
   const [chainId, setChainId] = useState(DEFAULT_CHAIN_ID);
+  const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('major');
+
+  const gmgnAvailable = isGmgnConfigured();
+  const gmgnSettings = useMemo(() => loadGmgnSettings(), []);
 
   const {
     entries: watchlistEntries,
@@ -58,11 +64,16 @@ function App() {
     refresh,
     totalCount,
     isEmpty,
-  } = usePoolData(chainId, onRefreshComplete);
+  } = usePoolData(chainId, onRefreshComplete, discoveryMode, gmgnSettings);
 
   const filteredPools = watchlistOnly
     ? pools.filter((p) => watchlistedAddrs.has(p.pairAddress.toLowerCase()))
     : pools;
+
+  const handleDiscoveryChange = useCallback((mode: DiscoveryMode) => {
+    if (mode === 'gmgn' && !gmgnAvailable) return;
+    setDiscoveryMode(mode);
+  }, [gmgnAvailable]);
 
   return (
     <div className="app">
@@ -76,6 +87,11 @@ function App() {
       />
       <div className="controls-row">
         <ChainSwitcher activeChainId={chainId} onSwitch={setChainId} />
+        <DiscoveryToggle
+          mode={discoveryMode}
+          onChange={handleDiscoveryChange}
+          gmgnAvailable={gmgnAvailable}
+        />
         <TimeframeSwitcher active={timeWindow} onChange={setTimeWindow} />
         <WatchlistControls
           watchlistOnly={watchlistOnly}
@@ -86,23 +102,29 @@ function App() {
         <AlertSettingsPanel settings={alertSettings} onUpdate={updateAlertSettings} />
       </div>
 
+      {discoveryMode === 'gmgn' && !gmgnAvailable && (
+        <div className="warning-bar">
+          <span>GMGN API key not configured. Add <code>GMGN_API_KEY=your_key</code> to <code>.env</code> and restart dev server.</span>
+        </div>
+      )}
+
       {error && (
         <div className="error-bar">
-          <span>⚠️ {error}</span>
+          <span>{error}</span>
           <button onClick={refresh}>重试</button>
         </div>
       )}
 
       {warnings.length > 0 && !error && (
         <div className="warning-bar">
-          <span>⚠️ {warnings[0]}{warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ''}</span>
+          <span>{warnings[0]}{warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ''}</span>
         </div>
       )}
 
       {loading && pools.length === 0 ? (
         <div className="loading-state">
           <div className="spinner" />
-          <p>正在加载数据...</p>
+          <p>{discoveryMode === 'gmgn' ? 'GMGN Smart Money loading...' : '正在加载数据...'}</p>
         </div>
       ) : (
         <>
@@ -128,6 +150,7 @@ function App() {
             timeWindow={timeWindow}
             isWatchlisted={isWatchlisted}
             onToggleWatchlist={togglePool}
+            discoveryMode={discoveryMode}
           />
         </>
       )}

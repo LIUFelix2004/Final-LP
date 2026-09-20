@@ -167,6 +167,81 @@ export function estimateFeeUsd(volumeH24: number, feeRatePercent: number | null)
   return volumeH24 * (feeRatePercent / 100);
 }
 
+function txnTotal(w?: { buys: number; sells: number }): number | null {
+  return w ? w.buys + w.sells : null;
+}
+
+export function mapPairToPoolData(pair: DexScreenerPair, chainId: number): PoolData {
+  const feeRate = inferFeeRateFromDexId(pair.dexId, pair.labels);
+  const vol24 = pair.volume?.h24 ?? 0;
+  const feeUsd = estimateFeeUsd(vol24, feeRate);
+  const tvlUsd = pair.liquidity?.usd ?? null;
+  const txCount = pair.txns?.h24 ? pair.txns.h24.buys + pair.txns.h24.sells : null;
+
+  return {
+    id: `${pair.pairAddress}-${pair.dexId}`,
+    pairAddress: pair.pairAddress,
+    token0Symbol: pair.baseToken.symbol,
+    token1Symbol: pair.quoteToken.symbol,
+    token0Address: pair.baseToken.address,
+    token1Address: pair.quoteToken.address,
+    dex: mapDexName(pair.dexId),
+    version: mapDexVersion(pair.dexId, pair.labels),
+    chainId,
+    priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : null,
+    feeRate,
+    feeUsd,
+    tvlUsd,
+    feeTvlRatio: computeFeeTvlRatio(feeUsd, tvlUsd),
+    volumeUsd: vol24 || null,
+    txCount,
+    pairSymbol: `${pair.baseToken.symbol}/${pair.quoteToken.symbol}`,
+    windows: {
+      m5: { volume: pair.volume?.m5 ?? null, txCount: txnTotal(pair.txns?.m5) },
+      h1: { volume: pair.volume?.h1 ?? null, txCount: txnTotal(pair.txns?.h1) },
+      h6: { volume: pair.volume?.h6 ?? null, txCount: txnTotal(pair.txns?.h6) },
+      h24: { volume: vol24 || null, txCount },
+    },
+  };
+}
+
+export async function fetchPairsByTokens(
+  tokens: string[],
+  chainId: number,
+): Promise<{ pairs: DexScreenerPair[]; errors: string[] }> {
+  const slug = CHAIN_SLUG[chainId];
+  if (!slug) return { pairs: [], errors: [`Unknown chain ${chainId}`] };
+
+  const allPairs: DexScreenerPair[] = [];
+  const seen = new Set<string>();
+  const errors: string[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    try {
+      const resp = await fetchWithRetry(
+        `${DEXSCREENER_API}/latest/dex/tokens/${token}`,
+      );
+      const data = await resp.json();
+      const pairs: DexScreenerPair[] = (data.pairs || []).filter(
+        (p: DexScreenerPair) => p.chainId === slug,
+      );
+      for (const p of pairs) {
+        if (!seen.has(p.pairAddress)) {
+          seen.add(p.pairAddress);
+          allPairs.push(p);
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`Token ${token.slice(0, 10)}…: ${msg}`);
+    }
+    if (i < tokens.length - 1) await sleep(200);
+  }
+
+  return { pairs: allPairs, errors };
+}
+
 export interface FetchResult {
   pools: PoolData[];
   errors: string[];
@@ -275,44 +350,7 @@ export async function fetchTopPools(chainId: number): Promise<FetchResult> {
   }
 
   const pools = allPairs
-    .map((pair): PoolData => {
-      const feeRate = inferFeeRateFromDexId(pair.dexId, pair.labels);
-      const vol24 = pair.volume?.h24 ?? 0;
-      const feeUsd = estimateFeeUsd(vol24, feeRate);
-      const tvlUsd = pair.liquidity?.usd ?? null;
-      const txCount = pair.txns?.h24
-        ? pair.txns.h24.buys + pair.txns.h24.sells
-        : null;
-
-      const txnTotal = (w?: { buys: number; sells: number }) =>
-        w ? w.buys + w.sells : null;
-
-      return {
-        id: `${pair.pairAddress}-${pair.dexId}`,
-        pairAddress: pair.pairAddress,
-        token0Symbol: pair.baseToken.symbol,
-        token1Symbol: pair.quoteToken.symbol,
-        token0Address: pair.baseToken.address,
-        token1Address: pair.quoteToken.address,
-        dex: mapDexName(pair.dexId),
-        version: mapDexVersion(pair.dexId, pair.labels),
-        chainId,
-        priceUsd: pair.priceUsd ? parseFloat(pair.priceUsd) : null,
-        feeRate,
-        feeUsd,
-        tvlUsd,
-        feeTvlRatio: computeFeeTvlRatio(feeUsd, tvlUsd),
-        volumeUsd: vol24 || null,
-        txCount,
-        pairSymbol: `${pair.baseToken.symbol}/${pair.quoteToken.symbol}`,
-        windows: {
-          m5: { volume: pair.volume?.m5 ?? null, txCount: txnTotal(pair.txns?.m5) },
-          h1: { volume: pair.volume?.h1 ?? null, txCount: txnTotal(pair.txns?.h1) },
-          h6: { volume: pair.volume?.h6 ?? null, txCount: txnTotal(pair.txns?.h6) },
-          h24: { volume: vol24 || null, txCount },
-        },
-      };
-    })
+    .map((pair) => mapPairToPoolData(pair, chainId))
     .filter((p) => p.tvlUsd !== null && p.tvlUsd > 0)
     .sort((a, b) => (b.feeUsd ?? 0) - (a.feeUsd ?? 0));
 

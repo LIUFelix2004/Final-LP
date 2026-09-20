@@ -143,6 +143,40 @@
   opacity: 0.6;
 }
 
+/* Discovery Toggle */
+.discovery-toggle {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 3px;
+  border: 1px solid var(--border);
+}
+
+.dt-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.dt-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.dt-btn.active {
+  background: var(--accent-green);
+  color: #fff;
+}
+.dt-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Timeframe Switcher */
 .timeframe-switcher {
   display: flex;
@@ -367,6 +401,12 @@
 .fee-tvl-value {
   color: var(--accent-red);
   font-weight: 500;
+}
+
+/* Smart money column */
+.smart-buy-value {
+  color: #F59E0B;
+  font-weight: 600;
 }
 
 /* Empty state */

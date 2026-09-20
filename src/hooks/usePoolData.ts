@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import type { PoolData, SortField, SortDirection, TimeWindow } from '../types';
+import type { PoolData, SortField, SortDirection, TimeWindow, DiscoveryMode } from '../types';
 import { fetchTopPools } from '../services/dexscreener';
+import { fetchGmgnPools } from '../services/gmgn';
+import type { GmgnSettings } from '../services/gmgn';
+import { DEFAULT_GMGN_SETTINGS } from '../services/gmgn';
 import { enrichV3FeeRates } from '../services/onchain';
 import { VolumeSampler } from '../services/sampler';
 import { applyTimeWindow } from '../utils/windowCalc';
@@ -9,7 +12,12 @@ const REFRESH_INTERVAL = 30_000;
 
 export type FetchStatus = 'idle' | 'loading' | 'success' | 'error';
 
-export function usePoolData(chainId: number, onRefreshComplete?: (pools: PoolData[]) => void) {
+export function usePoolData(
+  chainId: number,
+  onRefreshComplete?: (pools: PoolData[]) => void,
+  discoveryMode: DiscoveryMode = 'major',
+  gmgnSettings: GmgnSettings = DEFAULT_GMGN_SETTINGS,
+) {
   const [rawPools, setRawPools] = useState<PoolData[]>([]);
   const [status, setStatus] = useState<FetchStatus>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +43,9 @@ export function usePoolData(chainId: number, onRefreshComplete?: (pools: PoolDat
     }
 
     try {
-      const result = await fetchTopPools(chainId);
+      const result = discoveryMode === 'gmgn'
+        ? await fetchGmgnPools(chainId, gmgnSettings)
+        : await fetchTopPools(chainId);
 
       let enriched: PoolData[];
       try {
@@ -77,7 +87,7 @@ export function usePoolData(chainId: number, onRefreshComplete?: (pools: PoolDat
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chainId]);
+  }, [chainId, discoveryMode, gmgnSettings]);
 
   useEffect(() => {
     poolsRef.current = [];

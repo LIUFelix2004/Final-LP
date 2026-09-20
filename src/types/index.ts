@@ -1,4 +1,5 @@
 export type TimeWindow = 'm5' | 'm15' | 'h1' | 'h6' | 'h24';
+export type DiscoveryMode = 'major' | 'gmgn';
 
 export interface WindowData {
   volume: number | null;
@@ -24,6 +25,9 @@ export interface PoolData {
   txCount: number | null;
   pairSymbol: string;
   windows: Record<'m5' | 'h1' | 'h6' | 'h24', WindowData>;
+  smartBuyCount?: number;
+  smartBuyUsdSum?: number;
+  lastSmartBuyAt?: number;
 }
 
 export interface ChainConfig {
@@ -35,7 +39,7 @@ export interface ChainConfig {
   nativeCurrency: string;
 }
 
-export type SortField = 'feeUsd' | 'feeRate' | 'tvlUsd' | 'feeTvlRatio' | 'volumeUsd' | 'txCount' | 'priceUsd';
+export type SortField = 'feeUsd' | 'feeRate' | 'tvlUsd' | 'feeTvlRatio' | 'volumeUsd' | 'txCount' | 'priceUsd' | 'smartBuyCount';
 export type SortDirection = 'asc' | 'desc';
 
 export const TIME_WINDOW_LABELS: Record<TimeWindow, string> = {
