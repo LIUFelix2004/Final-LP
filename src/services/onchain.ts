@@ -48,6 +48,11 @@ const robinhoodChain = {
   blockExplorers: {
     default: { name: 'Explorer', url: CHAINS[4663]?.explorerUrl || 'https://explorer.robinhoodchain.com' },
   },
+  contracts: {
+    multicall3: {
+      address: '0xcA11bde05977b3631167028862bE2a173976CA11' as const,
+    },
+  },
 } as const;
 
 function getClient(chainId: number) {
@@ -103,7 +108,7 @@ export async function enrichV3FeeRates(
         }
       }
     } catch (err) {
-      console.warn('Multicall fee() failed for standard V3:', err);
+      console.warn(`Multicall fee() failed for standard V3 on chain ${chainId}:`, err);
     }
   }
 
