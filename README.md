@@ -134,6 +134,15 @@ Switching windows recomputes Fee, Fee/TVL, and Volume from already-fetched data 
 - Block explorer links
 - On-chain V3 fee tier enrichment via RPC
 
+## GMGN Mode (Dev Only)
+
+GMGN 土狗 discovery mode requires the Vite dev proxy (`npm run dev`) — it proxies two routes:
+
+- `/api/gmgn` → `openapi.gmgn.ai` (primary, injects `X-APIKEY` header + per-request `client_id` + `timestamp`)
+- `/api/gmgnq` → `gmgn.ai/defi/quotation/v1` (fallback with browser-like headers)
+
+Set `GMGN_API_KEY` in `.env` (see `.env.example`). Without it the GMGN toggle is hidden. The proxy is **not** available in production builds — GMGN mode is dev-only.
+
 ## Scripts
 
 ```bash

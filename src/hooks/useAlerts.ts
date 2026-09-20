@@ -44,6 +44,11 @@ export function useAlerts() {
     setToasts((prev) => prev.filter((_, i) => i !== idx));
   }, []);
 
+  const clearToasts = useCallback(() => {
+    setToasts([]);
+    detectorRef.current.clearCooldowns();
+  }, []);
+
   useEffect(() => {
     if (toasts.length === 0) return;
     const timer = setTimeout(() => {
@@ -58,5 +63,6 @@ export function useAlerts() {
     checkSpikes,
     toasts,
     dismissToast,
+    clearToasts,
   };
 }

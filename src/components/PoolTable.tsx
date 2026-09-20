@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { PoolData, SortField, SortDirection, TimeWindow, DiscoveryMode } from '../types';
 import { TIME_WINDOW_LABELS } from '../types';
 import { CHAINS } from '../config/chains';
@@ -34,6 +35,8 @@ const VERSION_COLORS: Record<string, string> = {
   V4: '#8B5CF6',
 };
 
+const PAGE_SIZE = 100;
+
 interface ColumnDef {
   key: SortField | 'rank' | 'pair' | 'actions' | 'lastSmartBuyAt';
   label: string | ((tw: TimeWindow) => string);
@@ -41,14 +44,15 @@ interface ColumnDef {
   align?: 'left' | 'right' | 'center';
   title?: string | ((tw: TimeWindow) => string);
   gmgnOnly?: boolean;
+  gmgnKey?: 'smartBuyUsdSum';
 }
 
 const BASE_COLUMNS: ColumnDef[] = [
   { key: 'rank', label: '#', sortable: false, align: 'center' },
   { key: 'pair', label: '交易对', sortable: false, align: 'left' },
   { key: 'smartBuyCount', label: '聪明钱买入', sortable: true, align: 'right', title: 'Smart money 24h buy count (GMGN)', gmgnOnly: true },
-  { key: 'smartBuyUsdSum', label: '聪明钱买入额', sortable: true, align: 'right', title: 'Smart money buy volume USD (GMGN)', gmgnOnly: true },
-  { key: 'lastSmartBuyAt', label: '最近买入', sortable: false, align: 'right', title: 'Time since last smart money buy; falls back to token creation time when unavailable (GMGN)', gmgnOnly: true },
+  { key: 'smartBuyUsdSum', label: '聪明钱买入额', sortable: true, align: 'right', title: 'Smart money buy volume USD (GMGN); 上游可能无此字段', gmgnOnly: true, gmgnKey: 'smartBuyUsdSum' },
+  { key: 'lastSmartBuyAt', label: '最近买入', sortable: false, align: 'right', title: '最近聪明钱买入时间；若无则显示代币 open_timestamp', gmgnOnly: true },
   { key: 'priceUsd', label: '价格', sortable: true, align: 'right' },
   { key: 'feeRate', label: '费率', sortable: true, align: 'right', title: 'V2: fixed rate; V3/CL: on-chain fee(); V4: pool key fee' },
   {
@@ -115,6 +119,17 @@ function formatLastSmartBuy(ts: number | undefined): string {
   return `${days}d`;
 }
 
+function formatAge(ts: number | undefined): string | null {
+  if (!ts) return null;
+  const diff = Date.now() - ts;
+  if (diff < 0) return null;
+  const hours = Math.floor(diff / 3600000);
+  if (hours < 1) return '<1h';
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
 function gmgnTokenUrl(chainId: number, pool: PoolData): string | null {
   const slug = GMGN_CHAIN_SLUG[chainId];
   if (!slug) return null;
@@ -125,8 +140,19 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
   const chain = CHAINS[chainId];
   const twLabel = TIME_WINDOW_LABELS[timeWindow];
   const isGmgn = discoveryMode === 'gmgn';
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
-  const columns = BASE_COLUMNS.filter((c) => !c.gmgnOnly || isGmgn);
+  const hasSmartBuyUsd = isGmgn && pools.length > 0 &&
+    pools.filter((p) => p.smartBuyUsdSum !== undefined).length > pools.length * 0.1;
+
+  const columns = BASE_COLUMNS.filter((c) => {
+    if (c.gmgnOnly && !isGmgn) return false;
+    if (c.gmgnKey === 'smartBuyUsdSum' && !hasSmartBuyUsd) return false;
+    return true;
+  });
+
+  const visiblePools = pools.slice(0, visibleCount);
+  const hasMore = pools.length > visibleCount;
 
   const emptyMessage = hasError
     ? '获取数据失败，请点击重试'
@@ -168,8 +194,9 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
               </td>
             </tr>
           ) : (
-            pools.map((pool, idx) => {
+            visiblePools.map((pool, idx) => {
               const gmgnUrl = isGmgn ? gmgnTokenUrl(chainId, pool) : null;
+              const ageLabel = isGmgn ? formatAge(pool.lastSmartBuyAt) : null;
               return (
                 <tr key={pool.id} className={idx % 2 === 0 ? 'row-even' : 'row-odd'}>
                   <td className="center">
@@ -189,13 +216,16 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
                       {pool.version}
                     </span>
                     <span className="pair-symbol">{pool.pairSymbol}</span>
+                    {ageLabel && (
+                      <span className="age-chip" title="代币/最近买入年龄">{ageLabel}</span>
+                    )}
                   </td>
                   {isGmgn && (
                     <td className="right mono smart-buy-value">
                       {formatSmartBuy(pool.smartBuyCount)}
                     </td>
                   )}
-                  {isGmgn && (
+                  {isGmgn && hasSmartBuyUsd && (
                     <td className="right mono">
                       {formatSmartBuyUsd(pool.smartBuyUsdSum)}
                     </td>
@@ -254,12 +284,20 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
           )}
         </tbody>
       </table>
+      {hasMore && (
+        <div className="load-more-row">
+          <button className="refresh-btn" onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}>
+            加载更多 ({pools.length - visibleCount} 剩余)
+          </button>
+        </div>
+      )}
       {pools.length > 0 && (
         <div className="table-footer">
           * Fee = estimated {twLabel} Volume × Fee Rate.
           {timeWindow === 'm15' && ' 15m volume is locally sampled (approximate).'}
           {' '}V3/CL fee rates read on-chain when RPC available.
           {isGmgn && ' Smart money data from GMGN (24h).'}
+          {isGmgn && !hasSmartBuyUsd && ' 上游无买入额字段。'}
         </div>
       )}
     </div>

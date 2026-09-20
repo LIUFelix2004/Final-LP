@@ -14,16 +14,29 @@ export const GMGN_CHAIN_SLUG: Record<number, string> = {
   4663: 'robinhood',
 };
 
+const MAJOR_BASES = new Set([
+  'wbnb', 'weth', 'usdt', 'usdc', 'usd1', 'usdg', 'virtual', 'up', 'eth', 'btcb',
+  'busd', 'dai',
+]);
+
 export interface GmgnSettings {
+  minSmartBuyCount: number;
   minSmartBuyUsd: number;
+  maxAgeHours: number;
+  hideMajorBases: boolean;
   includeKol: boolean;
   limit: number;
+  dexFanout: number;
 }
 
 export const DEFAULT_GMGN_SETTINGS: GmgnSettings = {
+  minSmartBuyCount: 3,
   minSmartBuyUsd: 50,
+  maxAgeHours: 0,
+  hideMajorBases: true,
   includeKol: false,
   limit: 100,
+  dexFanout: 40,
 };
 
 const GMGN_SETTINGS_KEY = 'lp-gmgn-settings-v1';
@@ -101,7 +114,7 @@ function unwrapRanks(json: GmgnResponse): GmgnTokenRank[] | null {
 async function tryFetchRanks(
   url: string,
   label: string,
-): Promise<{ ranks: GmgnTokenRank[] | null; error: string | null }> {
+): Promise<{ ranks: GmgnTokenRank[] | null; error: string | null; is429?: boolean }> {
   let resp: Response;
   try {
     resp = await fetch(url);
@@ -118,7 +131,7 @@ async function tryFetchRanks(
   }
 
   if (resp.status === 429) {
-    return { ranks: null, error: `${label}: GMGN 限流 (429) — 稍后再试` };
+    return { ranks: null, error: `${label}: GMGN 限流 (429) — 稍后再试`, is429: true };
   }
 
   if (!resp.ok) {
@@ -153,25 +166,37 @@ async function tryFetchRanks(
   return { ranks, error: null };
 }
 
+interface SmartMoneyResult {
+  ranks: GmgnTokenRank[];
+  warnings: string[];
+}
+
 export async function fetchSmartMoneyTokens(
   chainId: number,
   settings: GmgnSettings,
-): Promise<GmgnTokenRank[]> {
+): Promise<SmartMoneyResult> {
   const chain = GMGN_CHAIN_SLUG[chainId];
   if (!chain) throw new Error(`GMGN does not support chain ${chainId}`);
+
+  const warnings: string[] = [];
 
   const primaryUrl = `${GMGN_PRIMARY}/v1/market/rank?chain=${chain}&interval=1h&order_by=smart_degen_count&direction=desc&limit=${settings.limit}`;
   const primary = await tryFetchRanks(primaryUrl, 'OpenAPI');
 
   if (primary.ranks) {
-    return primary.ranks.filter((t) => (t.smart_degen_count ?? t.smart_buy_24h ?? 0) > 0);
+    const filtered = primary.ranks.filter((t) => (t.smart_degen_count ?? t.smart_buy_24h ?? 0) > 0);
+    return { ranks: filtered, warnings };
   }
 
   const fallbackUrl = `${GMGN_FALLBACK}/rank/${chain}/swaps/1h?orderby=smartmoney&direction=desc&limit=${settings.limit}`;
   const fallback = await tryFetchRanks(fallbackUrl, 'Quotation');
 
   if (fallback.ranks) {
-    return fallback.ranks.filter((t) => (t.smart_degen_count ?? t.smart_buy_24h ?? 0) > 0);
+    if (primary.is429) {
+      warnings.push('OpenAPI 限流，已用 Quotation 备用');
+    }
+    const filtered = fallback.ranks.filter((t) => (t.smart_degen_count ?? t.smart_buy_24h ?? 0) > 0);
+    return { ranks: filtered, warnings };
   }
 
   throw new Error(
@@ -185,13 +210,22 @@ export function extractTokenAddresses(
 ): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
+  const now = Date.now() / 1000;
 
   for (const t of ranks) {
     const addr = t.address?.toLowerCase();
     if (!addr || seen.has(addr)) continue;
 
+    const buyCount = t.smart_degen_count ?? t.smart_buy_24h ?? 0;
+    if (settings.minSmartBuyCount > 0 && buyCount < settings.minSmartBuyCount) continue;
+
     if (settings.minSmartBuyUsd > 0 && t.smartBuyVolumeUsd !== undefined) {
       if (t.smartBuyVolumeUsd < settings.minSmartBuyUsd) continue;
+    }
+
+    if (settings.maxAgeHours > 0 && t.open_timestamp > 0) {
+      const ageHours = (now - t.open_timestamp) / 3600;
+      if (ageHours > settings.maxAgeHours) continue;
     }
 
     seen.add(addr);
@@ -201,6 +235,10 @@ export function extractTokenAddresses(
   return result;
 }
 
+function isMajorSymbol(sym: string): boolean {
+  return MAJOR_BASES.has(sym.toLowerCase());
+}
+
 export async function fetchGmgnPools(
   chainId: number,
   settings: GmgnSettings,
@@ -208,11 +246,11 @@ export async function fetchGmgnPools(
   const slug = CHAIN_SLUG[chainId];
   if (!slug) return { pools: [], errors: [`Unknown chain ${chainId}`], partial: false };
 
-  const ranks = await fetchSmartMoneyTokens(chainId, settings);
+  const { ranks, warnings: gmgnWarnings } = await fetchSmartMoneyTokens(chainId, settings);
   const tokens = extractTokenAddresses(ranks, settings);
 
   if (tokens.length === 0) {
-    return { pools: [], errors: [], partial: false };
+    return { pools: [], errors: gmgnWarnings, partial: false };
   }
 
   const smartMap = new Map<string, GmgnTokenRank>();
@@ -220,9 +258,15 @@ export async function fetchGmgnPools(
     smartMap.set(r.address.toLowerCase(), r);
   }
 
-  const { pairs, errors } = await fetchPairsByTokens(tokens.slice(0, 30), chainId);
+  const fanout = Math.min(tokens.length, settings.dexFanout);
+  const { pairs, errors: dexErrors } = await fetchPairsByTokens(tokens.slice(0, fanout), chainId);
 
-  const pools: PoolData[] = pairs
+  const allWarnings = [...gmgnWarnings];
+  if (dexErrors.length > 0) {
+    allWarnings.push(`${dexErrors.length}/${fanout} 个代币池拉取失败`);
+  }
+
+  let pools: PoolData[] = pairs
     .map((pair) => {
       const pool = mapPairToPoolData(pair, chainId);
 
@@ -237,8 +281,13 @@ export async function fetchGmgnPools(
       }
       return pool;
     })
-    .filter((p) => p.tvlUsd !== null && p.tvlUsd > 0)
-    .sort((a, b) => (b.smartBuyCount ?? 0) - (a.smartBuyCount ?? 0));
+    .filter((p) => p.tvlUsd !== null && p.tvlUsd > 0);
 
-  return { pools, errors, partial: errors.length > 0 };
+  if (settings.hideMajorBases) {
+    pools = pools.filter((p) => !isMajorSymbol(p.token0Symbol) || !isMajorSymbol(p.token1Symbol));
+  }
+
+  pools.sort((a, b) => (b.smartBuyCount ?? 0) - (a.smartBuyCount ?? 0));
+
+  return { pools, errors: allWarnings, partial: allWarnings.length > 0 };
 }

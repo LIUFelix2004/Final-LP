@@ -96,6 +96,72 @@ describe('extractTokenAddresses', () => {
     const result = extractTokenAddresses(ranks, settings);
     expect(result).toEqual(['0xa', '0xb']);
   });
+
+  it('filters by minSmartBuyCount', () => {
+    const ranks = [
+      makeRank({ address: '0xHigh', smart_buy_24h: 10 }),
+      makeRank({ address: '0xLow', smart_buy_24h: 1 }),
+      makeRank({ address: '0xMid', smart_buy_24h: 3 }),
+    ];
+    const settings = { ...DEFAULT_GMGN_SETTINGS, minSmartBuyCount: 3 };
+    const result = extractTokenAddresses(ranks, settings);
+    expect(result).toEqual(['0xhigh', '0xmid']);
+  });
+
+  it('uses smart_degen_count for minSmartBuyCount when present', () => {
+    const ranks = [
+      makeRank({ address: '0xA', smart_degen_count: 5, smart_buy_24h: 1 }),
+      makeRank({ address: '0xB', smart_degen_count: 1, smart_buy_24h: 10 }),
+    ];
+    const settings = { ...DEFAULT_GMGN_SETTINGS, minSmartBuyCount: 3 };
+    const result = extractTokenAddresses(ranks, settings);
+    expect(result).toEqual(['0xa']);
+  });
+
+  it('does not filter when minSmartBuyCount is 0', () => {
+    const ranks = [
+      makeRank({ address: '0xA', smart_buy_24h: 0 }),
+      makeRank({ address: '0xB', smart_buy_24h: 1 }),
+    ];
+    const settings = { ...DEFAULT_GMGN_SETTINGS, minSmartBuyCount: 0 };
+    const result = extractTokenAddresses(ranks, settings);
+    expect(result).toEqual(['0xa', '0xb']);
+  });
+
+  it('filters by maxAgeHours', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const ranks = [
+      makeRank({ address: '0xNew', open_timestamp: now - 3600 }),
+      makeRank({ address: '0xOld', open_timestamp: now - 3600 * 50 }),
+      makeRank({ address: '0xMid', open_timestamp: now - 3600 * 23 }),
+    ];
+    const settings = { ...DEFAULT_GMGN_SETTINGS, maxAgeHours: 24 };
+    const result = extractTokenAddresses(ranks, settings);
+    expect(result).toEqual(['0xnew', '0xmid']);
+  });
+
+  it('does not filter age when maxAgeHours is 0', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const ranks = [
+      makeRank({ address: '0xAncient', open_timestamp: now - 3600 * 1000 }),
+    ];
+    const settings = { ...DEFAULT_GMGN_SETTINGS, maxAgeHours: 0 };
+    const result = extractTokenAddresses(ranks, settings);
+    expect(result).toEqual(['0xancient']);
+  });
+
+  it('combines multiple filters', () => {
+    const now = Math.floor(Date.now() / 1000);
+    const ranks = [
+      makeRank({ address: '0xGood', smart_buy_24h: 5, smartBuyVolumeUsd: 200, open_timestamp: now - 3600 }),
+      makeRank({ address: '0xLowCount', smart_buy_24h: 1, smartBuyVolumeUsd: 500, open_timestamp: now - 3600 }),
+      makeRank({ address: '0xLowUsd', smart_buy_24h: 10, smartBuyVolumeUsd: 10, open_timestamp: now - 3600 }),
+      makeRank({ address: '0xTooOld', smart_buy_24h: 10, smartBuyVolumeUsd: 500, open_timestamp: now - 3600 * 100 }),
+    ];
+    const settings = { ...DEFAULT_GMGN_SETTINGS, minSmartBuyCount: 3, minSmartBuyUsd: 100, maxAgeHours: 24 };
+    const result = extractTokenAddresses(ranks, settings);
+    expect(result).toEqual(['0xgood']);
+  });
 });
 
 describe('GmgnTokenRank shape', () => {
@@ -122,5 +188,17 @@ describe('GmgnTokenRank shape', () => {
     expect(r.smart_degen_count).toBe(42);
     expect(r.smartBuyVolumeUsd).toBe(5000);
     expect(r.last_smart_buy_timestamp).toBe(1700000000);
+  });
+});
+
+describe('DEFAULT_GMGN_SETTINGS', () => {
+  it('has expected defaults', () => {
+    expect(DEFAULT_GMGN_SETTINGS.minSmartBuyCount).toBe(3);
+    expect(DEFAULT_GMGN_SETTINGS.minSmartBuyUsd).toBe(50);
+    expect(DEFAULT_GMGN_SETTINGS.maxAgeHours).toBe(0);
+    expect(DEFAULT_GMGN_SETTINGS.hideMajorBases).toBe(true);
+    expect(DEFAULT_GMGN_SETTINGS.includeKol).toBe(false);
+    expect(DEFAULT_GMGN_SETTINGS.dexFanout).toBe(40);
+    expect(DEFAULT_GMGN_SETTINGS.limit).toBe(100);
   });
 });

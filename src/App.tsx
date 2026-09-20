@@ -1,7 +1,8 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import type { PoolData, DiscoveryMode } from './types';
 import { ChainSwitcher } from './components/ChainSwitcher';
 import { DiscoveryToggle } from './components/DiscoveryToggle';
+import { GmgnSettingsPanel } from './components/GmgnSettingsPanel';
 import { Header } from './components/Header';
 import { PoolTable } from './components/PoolTable';
 import { TimeframeSwitcher } from './components/TimeframeSwitcher';
@@ -11,16 +12,22 @@ import { ToastContainer } from './components/ToastContainer';
 import { usePoolData } from './hooks/usePoolData';
 import { useWatchlist } from './hooks/useWatchlist';
 import { useAlerts } from './hooks/useAlerts';
-import { isGmgnConfigured, loadGmgnSettings } from './services/gmgn';
+import { isGmgnConfigured, loadGmgnSettings, saveGmgnSettings } from './services/gmgn';
+import type { GmgnSettings } from './services/gmgn';
 import { DEFAULT_CHAIN_ID } from './config/chains';
 import './App.css';
 
 function App() {
   const [chainId, setChainId] = useState(DEFAULT_CHAIN_ID);
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('major');
+  const [gmgnSettings, setGmgnSettings] = useState<GmgnSettings>(loadGmgnSettings);
 
   const gmgnAvailable = isGmgnConfigured();
-  const gmgnSettings = useMemo(() => loadGmgnSettings(), []);
+
+  const handleGmgnSettingsUpdate = useCallback((next: GmgnSettings) => {
+    setGmgnSettings(next);
+    saveGmgnSettings(next);
+  }, []);
 
   const {
     entries: watchlistEntries,
@@ -39,7 +46,12 @@ function App() {
     checkSpikes,
     toasts,
     dismissToast,
+    clearToasts,
   } = useAlerts();
+
+  useEffect(() => {
+    clearToasts();
+  }, [chainId, discoveryMode, clearToasts]);
 
   const onRefreshComplete = useCallback(
     (pools: PoolData[]) => {
@@ -92,6 +104,9 @@ function App() {
           onChange={handleDiscoveryChange}
           gmgnAvailable={gmgnAvailable}
         />
+        {discoveryMode === 'gmgn' && (
+          <GmgnSettingsPanel settings={gmgnSettings} onUpdate={handleGmgnSettingsUpdate} />
+        )}
         <TimeframeSwitcher active={timeWindow} onChange={setTimeWindow} />
         <WatchlistControls
           watchlistOnly={watchlistOnly}

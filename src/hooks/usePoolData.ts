@@ -109,13 +109,15 @@ export function usePoolData(
     setError(null);
     setWarnings([]);
     setStatus('loading');
+    setSortField(discoveryMode === 'gmgn' ? 'smartBuyCount' : 'feeUsd');
+    setSortDir('desc');
     fetchData(false);
 
     intervalRef.current = setInterval(() => fetchData(false), REFRESH_INTERVAL);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
-  }, [fetchData]);
+  }, [fetchData, discoveryMode]);
 
   const pools = useMemo(
     () => applyTimeWindow(rawPools, timeWindow, samplerRef.current),
