@@ -35,7 +35,7 @@ const VERSION_COLORS: Record<string, string> = {
 };
 
 interface ColumnDef {
-  key: SortField | 'rank' | 'pair' | 'actions';
+  key: SortField | 'rank' | 'pair' | 'actions' | 'lastSmartBuyAt';
   label: string | ((tw: TimeWindow) => string);
   sortable: boolean;
   align?: 'left' | 'right' | 'center';
@@ -47,6 +47,8 @@ const BASE_COLUMNS: ColumnDef[] = [
   { key: 'rank', label: '#', sortable: false, align: 'center' },
   { key: 'pair', label: '交易对', sortable: false, align: 'left' },
   { key: 'smartBuyCount', label: '聪明钱买入', sortable: true, align: 'right', title: 'Smart money 24h buy count (GMGN)', gmgnOnly: true },
+  { key: 'smartBuyUsdSum', label: '聪明钱买入额', sortable: true, align: 'right', title: 'Smart money buy volume USD (GMGN)', gmgnOnly: true },
+  { key: 'lastSmartBuyAt', label: '最近买入', sortable: false, align: 'right', title: 'Time since last smart money buy (GMGN)', gmgnOnly: true },
   { key: 'priceUsd', label: '价格', sortable: true, align: 'right' },
   { key: 'feeRate', label: '费率', sortable: true, align: 'right', title: 'V2: fixed rate; V3/CL: on-chain fee(); V4: pool key fee' },
   {
@@ -91,6 +93,26 @@ function copyToClipboard(text: string) {
 function formatSmartBuy(count: number | undefined): string {
   if (count === undefined) return '—';
   return String(count);
+}
+
+function formatSmartBuyUsd(value: number | undefined): string {
+  if (value === undefined) return '—';
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+  return `$${value.toFixed(0)}`;
+}
+
+function formatLastSmartBuy(ts: number | undefined): string {
+  if (ts === undefined) return '—';
+  const diff = Date.now() - ts;
+  if (diff < 0) return 'just now';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return '<1m';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
 }
 
 function gmgnTokenUrl(chainId: number, pool: PoolData): string | null {
@@ -171,6 +193,16 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
                   {isGmgn && (
                     <td className="right mono smart-buy-value">
                       {formatSmartBuy(pool.smartBuyCount)}
+                    </td>
+                  )}
+                  {isGmgn && (
+                    <td className="right mono">
+                      {formatSmartBuyUsd(pool.smartBuyUsdSum)}
+                    </td>
+                  )}
+                  {isGmgn && (
+                    <td className="right mono">
+                      {formatLastSmartBuy(pool.lastSmartBuyAt)}
                     </td>
                   )}
                   <td className="right mono">{formatPrice(pool.priceUsd)}</td>

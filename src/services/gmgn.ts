@@ -6,7 +6,8 @@ import {
 } from './dexscreener';
 import type { FetchResult } from './dexscreener';
 
-const GMGN_PROXY = '/api/gmgn';
+const GMGN_PRIMARY = '/api/gmgn';
+const GMGN_FALLBACK = '/api/gmgn-fallback';
 
 export const GMGN_CHAIN_SLUG: Record<number, string> = {
   56: 'bsc',
@@ -60,6 +61,9 @@ export interface GmgnTokenRank {
   is_honeypot: number;
   buy_tax: string;
   sell_tax: string;
+  smart_degen_count?: number;
+  smartBuyVolumeUsd?: number;
+  last_smart_buy_timestamp?: number;
 }
 
 interface GmgnResponse {
@@ -67,6 +71,9 @@ interface GmgnResponse {
   msg?: string;
   data?: {
     rank?: GmgnTokenRank[];
+    data?: {
+      rank?: GmgnTokenRank[];
+    };
   };
 }
 
@@ -78,6 +85,74 @@ export function isGmgnConfigured(): boolean {
   }
 }
 
+function isCfChallenge(text: string): boolean {
+  return text.includes('cf-browser-verification') ||
+    text.includes('cloudflare') ||
+    text.includes('challenge-platform') ||
+    text.includes('Just a moment');
+}
+
+function unwrapRanks(json: GmgnResponse): GmgnTokenRank[] | null {
+  if (json.data?.rank && Array.isArray(json.data.rank)) return json.data.rank;
+  if (json.data?.data?.rank && Array.isArray(json.data.data.rank)) return json.data.data.rank;
+  return null;
+}
+
+async function tryFetchRanks(
+  url: string,
+  label: string,
+): Promise<{ ranks: GmgnTokenRank[] | null; error: string | null }> {
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (e) {
+    return { ranks: null, error: `${label}: network error — ${String(e)}` };
+  }
+
+  if (resp.status === 401 || resp.status === 403) {
+    const text = await resp.text().catch(() => '');
+    if (isCfChallenge(text)) {
+      return { ranks: null, error: `${label}: GMGN 被 Cloudflare 拦截 (403 challenge)` };
+    }
+    return { ranks: null, error: `${label}: GMGN API key 无效或过期 (${resp.status})` };
+  }
+
+  if (resp.status === 429) {
+    return { ranks: null, error: `${label}: GMGN 限流 (429) — 稍后再试` };
+  }
+
+  if (!resp.ok) {
+    return { ranks: null, error: `${label}: GMGN API 返回 ${resp.status}` };
+  }
+
+  const contentType = resp.headers.get('content-type') || '';
+  if (!contentType.includes('json')) {
+    const text = await resp.text().catch(() => '');
+    if (isCfChallenge(text)) {
+      return { ranks: null, error: `${label}: GMGN 被 Cloudflare 拦截 (HTML challenge)` };
+    }
+    return { ranks: null, error: `${label}: GMGN 返回非 JSON 响应` };
+  }
+
+  let json: GmgnResponse;
+  try {
+    json = await resp.json();
+  } catch {
+    return { ranks: null, error: `${label}: 无法解析 GMGN JSON 响应` };
+  }
+
+  if (json.code !== 0) {
+    return { ranks: null, error: `${label}: GMGN 错误 code=${json.code} — ${json.msg || '未知'}` };
+  }
+
+  const ranks = unwrapRanks(json);
+  if (!ranks) {
+    return { ranks: null, error: `${label}: GMGN 响应结构异常 (no rank array)` };
+  }
+
+  return { ranks, error: null };
+}
+
 export async function fetchSmartMoneyTokens(
   chainId: number,
   settings: GmgnSettings,
@@ -85,27 +160,28 @@ export async function fetchSmartMoneyTokens(
   const chain = GMGN_CHAIN_SLUG[chainId];
   if (!chain) throw new Error(`GMGN does not support chain ${chainId}`);
 
-  const url = `${GMGN_PROXY}/rank/${chain}/swaps/1h?orderby=smartmoney&direction=desc&limit=${settings.limit}`;
-  const resp = await fetch(url);
+  const primaryUrl = `${GMGN_PRIMARY}/v1/market/rank?chain=${chain}&interval=1h&order_by=smart_degen_count&direction=desc&limit=${settings.limit}`;
+  const primary = await tryFetchRanks(primaryUrl, 'OpenAPI');
 
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('GMGN API key missing or invalid — set GMGN_API_KEY in .env');
-  }
-  if (!resp.ok) {
-    throw new Error(`GMGN API returned ${resp.status}`);
+  if (primary.ranks) {
+    return primary.ranks.filter((t) => (t.smart_degen_count ?? t.smart_buy_24h ?? 0) > 0);
   }
 
-  const json: GmgnResponse = await resp.json();
-  if (json.code !== 0 || !json.data?.rank) {
-    throw new Error(json.msg || 'GMGN returned unexpected response');
+  const fallbackUrl = `${GMGN_FALLBACK}/rank/${chain}/swaps/1h?orderby=smartmoney&direction=desc&limit=${settings.limit}`;
+  const fallback = await tryFetchRanks(fallbackUrl, 'Quotation');
+
+  if (fallback.ranks) {
+    return fallback.ranks.filter((t) => (t.smart_degen_count ?? t.smart_buy_24h ?? 0) > 0);
   }
 
-  return json.data.rank.filter((t) => t.smart_buy_24h > 0);
+  throw new Error(
+    `GMGN 请求失败:\n• ${primary.error}\n• ${fallback.error}`,
+  );
 }
 
 export function extractTokenAddresses(
   ranks: GmgnTokenRank[],
-  _settings: GmgnSettings,
+  settings: GmgnSettings,
 ): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -113,6 +189,11 @@ export function extractTokenAddresses(
   for (const t of ranks) {
     const addr = t.address?.toLowerCase();
     if (!addr || seen.has(addr)) continue;
+
+    if (settings.minSmartBuyUsd > 0 && t.smartBuyVolumeUsd !== undefined) {
+      if (t.smartBuyVolumeUsd < settings.minSmartBuyUsd) continue;
+    }
+
     seen.add(addr);
     result.push(addr);
   }
@@ -149,9 +230,11 @@ export async function fetchGmgnPools(
       const quoteSmrt = smartMap.get(pair.quoteToken.address.toLowerCase());
       const smrt = baseSmrt ?? quoteSmrt;
       if (smrt) {
-        pool.smartBuyCount = smrt.smart_buy_24h;
-        pool.smartBuyUsdSum = smrt.volume;
-        pool.lastSmartBuyAt = smrt.open_timestamp ? smrt.open_timestamp * 1000 : undefined;
+        pool.smartBuyCount = smrt.smart_degen_count ?? smrt.smart_buy_24h;
+        pool.smartBuyUsdSum = smrt.smartBuyVolumeUsd;
+        pool.lastSmartBuyAt = smrt.last_smart_buy_timestamp
+          ? smrt.last_smart_buy_timestamp * 1000
+          : undefined;
       }
       return pool;
     })

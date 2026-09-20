@@ -75,6 +75,27 @@ describe('extractTokenAddresses', () => {
     const result = extractTokenAddresses(ranks, DEFAULT_GMGN_SETTINGS);
     expect(result).toEqual(['0xfirst', '0xsecond', '0xthird']);
   });
+
+  it('filters by minSmartBuyUsd when smartBuyVolumeUsd is present', () => {
+    const ranks = [
+      makeRank({ address: '0xRich', smartBuyVolumeUsd: 1000 }),
+      makeRank({ address: '0xPoor', smartBuyVolumeUsd: 10 }),
+      makeRank({ address: '0xNoData' }),
+    ];
+    const settings = { ...DEFAULT_GMGN_SETTINGS, minSmartBuyUsd: 100 };
+    const result = extractTokenAddresses(ranks, settings);
+    expect(result).toEqual(['0xrich', '0xnodata']);
+  });
+
+  it('does not filter when minSmartBuyUsd is 0', () => {
+    const ranks = [
+      makeRank({ address: '0xA', smartBuyVolumeUsd: 1 }),
+      makeRank({ address: '0xB', smartBuyVolumeUsd: 0 }),
+    ];
+    const settings = { ...DEFAULT_GMGN_SETTINGS, minSmartBuyUsd: 0 };
+    const result = extractTokenAddresses(ranks, settings);
+    expect(result).toEqual(['0xa', '0xb']);
+  });
 });
 
 describe('GmgnTokenRank shape', () => {
@@ -90,5 +111,16 @@ describe('GmgnTokenRank shape', () => {
     const r = makeRank({ smart_buy_24h: 50, symbol: 'DOGE' });
     expect(r.smart_buy_24h).toBe(50);
     expect(r.symbol).toBe('DOGE');
+  });
+
+  it('supports new OpenAPI fields', () => {
+    const r = makeRank({
+      smart_degen_count: 42,
+      smartBuyVolumeUsd: 5000,
+      last_smart_buy_timestamp: 1700000000,
+    });
+    expect(r.smart_degen_count).toBe(42);
+    expect(r.smartBuyVolumeUsd).toBe(5000);
+    expect(r.last_smart_buy_timestamp).toBe(1700000000);
   });
 });

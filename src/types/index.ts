@@ -39,7 +39,7 @@ export interface ChainConfig {
   nativeCurrency: string;
 }
 
-export type SortField = 'feeUsd' | 'feeRate' | 'tvlUsd' | 'feeTvlRatio' | 'volumeUsd' | 'txCount' | 'priceUsd' | 'smartBuyCount';
+export type SortField = 'feeUsd' | 'feeRate' | 'tvlUsd' | 'feeTvlRatio' | 'volumeUsd' | 'txCount' | 'priceUsd' | 'smartBuyCount' | 'smartBuyUsdSum';
 export type SortDirection = 'asc' | 'desc';
 
 export const TIME_WINDOW_LABELS: Record<TimeWindow, string> = {
