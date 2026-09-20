@@ -1,3 +1,10 @@
+export type TimeWindow = 'm5' | 'm15' | 'h1' | 'h6' | 'h24';
+
+export interface WindowData {
+  volume: number | null;
+  txCount: number | null;
+}
+
 export interface PoolData {
   id: string;
   pairAddress: string;
@@ -16,6 +23,7 @@ export interface PoolData {
   volumeUsd: number | null;
   txCount: number | null;
   pairSymbol: string;
+  windows: Record<'m5' | 'h1' | 'h6' | 'h24', WindowData>;
 }
 
 export interface ChainConfig {
@@ -29,3 +37,11 @@ export interface ChainConfig {
 
 export type SortField = 'feeUsd' | 'feeRate' | 'tvlUsd' | 'feeTvlRatio' | 'volumeUsd' | 'txCount' | 'priceUsd';
 export type SortDirection = 'asc' | 'desc';
+
+export const TIME_WINDOW_LABELS: Record<TimeWindow, string> = {
+  m5: '5m',
+  m15: '15m≈',
+  h1: '1h',
+  h6: '6h',
+  h24: '24h',
+};

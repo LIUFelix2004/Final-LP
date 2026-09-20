@@ -88,11 +88,19 @@
   cursor: not-allowed;
 }
 
+/* Controls row */
+.controls-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
 /* Chain Switcher */
 .chain-switcher {
   display: flex;
   gap: 8px;
-  margin-bottom: 16px;
 }
 
 .chain-btn {
@@ -133,6 +141,36 @@
 .chain-id {
   font-size: 11px;
   opacity: 0.6;
+}
+
+/* Timeframe Switcher */
+.timeframe-switcher {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 3px;
+  border: 1px solid var(--border);
+}
+
+.tf-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.tf-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.tf-btn.active {
+  background: var(--accent-blue);
+  color: #fff;
 }
 
 /* Error */

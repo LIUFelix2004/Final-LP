@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChainSwitcher } from './components/ChainSwitcher';
 import { Header } from './components/Header';
 import { PoolTable } from './components/PoolTable';
+import { TimeframeSwitcher } from './components/TimeframeSwitcher';
 import { usePoolData } from './hooks/usePoolData';
 import { DEFAULT_CHAIN_ID } from './config/chains';
 import './App.css';
@@ -19,6 +20,8 @@ function App() {
     handleSort,
     minTvl,
     setMinTvl,
+    timeWindow,
+    setTimeWindow,
     refresh,
     totalCount,
     isEmpty,
@@ -34,7 +37,10 @@ function App() {
         minTvl={minTvl}
         onMinTvlChange={setMinTvl}
       />
-      <ChainSwitcher activeChainId={chainId} onSwitch={setChainId} />
+      <div className="controls-row">
+        <ChainSwitcher activeChainId={chainId} onSwitch={setChainId} />
+        <TimeframeSwitcher active={timeWindow} onChange={setTimeWindow} />
+      </div>
 
       {error && (
         <div className="error-bar">
@@ -69,6 +75,7 @@ function App() {
             chainId={chainId}
             isEmpty={isEmpty}
             hasError={!!error}
+            timeWindow={timeWindow}
           />
         </>
       )}

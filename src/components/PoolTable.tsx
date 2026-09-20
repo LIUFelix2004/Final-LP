@@ -1,4 +1,5 @@
-import type { PoolData, SortField, SortDirection } from '../types';
+import type { PoolData, SortField, SortDirection, TimeWindow } from '../types';
+import { TIME_WINDOW_LABELS } from '../types';
 import { CHAINS } from '../config/chains';
 import { formatUsd, formatPrice, formatFeeRate, formatPercent, formatNumber } from '../utils/format';
 import { RankBadge } from './RankBadge';
@@ -11,6 +12,7 @@ interface Props {
   chainId: number;
   isEmpty: boolean;
   hasError: boolean;
+  timeWindow: TimeWindow;
 }
 
 const DEX_COLORS: Record<string, string> = {
@@ -30,10 +32,10 @@ const VERSION_COLORS: Record<string, string> = {
 
 interface ColumnDef {
   key: SortField | 'rank' | 'pair' | 'actions';
-  label: string;
+  label: string | ((tw: TimeWindow) => string);
   sortable: boolean;
   align?: 'left' | 'right' | 'center';
-  title?: string;
+  title?: string | ((tw: TimeWindow) => string);
 }
 
 const COLUMNS: ColumnDef[] = [
@@ -41,13 +43,28 @@ const COLUMNS: ColumnDef[] = [
   { key: 'pair', label: '交易对', sortable: false, align: 'left' },
   { key: 'priceUsd', label: '价格', sortable: true, align: 'right' },
   { key: 'feeRate', label: '费率', sortable: true, align: 'right', title: 'V2: fixed rate; V3/CL: on-chain fee(); V4: pool key fee' },
-  { key: 'feeUsd', label: 'Fee (24h)*', sortable: true, align: 'right', title: 'Estimated: 24h Volume × Fee Rate' },
+  {
+    key: 'feeUsd',
+    label: (tw) => `Fee (${TIME_WINDOW_LABELS[tw]})*`,
+    sortable: true,
+    align: 'right',
+    title: (tw) => `Estimated: ${TIME_WINDOW_LABELS[tw]} Volume × Fee Rate`,
+  },
   { key: 'tvlUsd', label: 'TVL', sortable: true, align: 'right' },
   { key: 'feeTvlRatio', label: 'Fee/TVL', sortable: true, align: 'right', title: 'Estimated Fee ÷ TVL' },
-  { key: 'volumeUsd', label: 'Volume (24h)', sortable: true, align: 'right' },
+  {
+    key: 'volumeUsd',
+    label: (tw) => `Volume (${TIME_WINDOW_LABELS[tw]})`,
+    sortable: true,
+    align: 'right',
+  },
   { key: 'txCount', label: '交易数', sortable: true, align: 'right' },
   { key: 'actions', label: '操作', sortable: false, align: 'center' },
 ];
+
+function resolveLabel(label: string | ((tw: TimeWindow) => string), tw: TimeWindow): string {
+  return typeof label === 'function' ? label(tw) : label;
+}
 
 function SortIndicator({ field, sortField, sortDir }: { field: string; sortField: SortField; sortDir: SortDirection }) {
   if (field !== sortField) return <span className="sort-indicator inactive">↕</span>;
@@ -65,8 +82,9 @@ function copyToClipboard(text: string) {
   });
 }
 
-export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty, hasError }: Props) {
+export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty, hasError, timeWindow }: Props) {
   const chain = CHAINS[chainId];
+  const twLabel = TIME_WINDOW_LABELS[timeWindow];
 
   const emptyMessage = hasError
     ? '获取数据失败，请点击重试'
@@ -79,19 +97,25 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
       <table className="pool-table">
         <thead>
           <tr>
-            {COLUMNS.map((col) => (
-              <th
-                key={col.key}
-                className={`${col.align || 'left'} ${col.sortable ? 'sortable' : ''}`}
-                onClick={() => col.sortable && onSort(col.key as SortField)}
-                title={col.title}
-              >
-                {col.label}
-                {col.sortable && (
-                  <SortIndicator field={col.key} sortField={sortField} sortDir={sortDir} />
-                )}
-              </th>
-            ))}
+            {COLUMNS.map((col) => {
+              const label = resolveLabel(col.label, timeWindow);
+              const title = col.title
+                ? (typeof col.title === 'function' ? col.title(timeWindow) : col.title)
+                : undefined;
+              return (
+                <th
+                  key={col.key}
+                  className={`${col.align || 'left'} ${col.sortable ? 'sortable' : ''}`}
+                  onClick={() => col.sortable && onSort(col.key as SortField)}
+                  title={title}
+                >
+                  {label}
+                  {col.sortable && (
+                    <SortIndicator field={col.key} sortField={sortField} sortDir={sortDir} />
+                  )}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
@@ -154,7 +178,9 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
       </table>
       {pools.length > 0 && (
         <div className="table-footer">
-          * Fee = estimated 24h Volume × Fee Rate. V3/CL fee rates read on-chain when RPC available.
+          * Fee = estimated {twLabel} Volume × Fee Rate.
+          {timeWindow === 'm15' && ' 15m volume is locally sampled (approximate).'}
+          {' '}V3/CL fee rates read on-chain when RPC available.
         </div>
       )}
     </div>

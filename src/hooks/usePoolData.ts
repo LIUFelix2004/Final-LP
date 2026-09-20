@@ -1,14 +1,16 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import type { PoolData, SortField, SortDirection } from '../types';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import type { PoolData, SortField, SortDirection, TimeWindow } from '../types';
 import { fetchTopPools } from '../services/dexscreener';
 import { enrichV3FeeRates } from '../services/onchain';
+import { VolumeSampler } from '../services/sampler';
+import { applyTimeWindow } from '../utils/windowCalc';
 
 const REFRESH_INTERVAL = 30_000;
 
 export type FetchStatus = 'idle' | 'loading' | 'success' | 'error';
 
 export function usePoolData(chainId: number) {
-  const [pools, setPools] = useState<PoolData[]>([]);
+  const [rawPools, setRawPools] = useState<PoolData[]>([]);
   const [status, setStatus] = useState<FetchStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -16,15 +18,16 @@ export function usePoolData(chainId: number) {
   const [sortField, setSortField] = useState<SortField>('feeUsd');
   const [sortDir, setSortDir] = useState<SortDirection>('desc');
   const [minTvl, setMinTvl] = useState<number>(0);
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>('h24');
   const intervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const isManualRefresh = useRef(false);
   const poolsRef = useRef<PoolData[]>([]);
+  const samplerRef = useRef(new VolumeSampler());
 
   const fetchData = useCallback(async (manual = false) => {
     isManualRefresh.current = manual;
     const hadPreviousData = poolsRef.current.length > 0;
 
-    // Only show full loading spinner on first load or manual refresh with no data
     if (!hadPreviousData) {
       setStatus('loading');
     }
@@ -32,7 +35,6 @@ export function usePoolData(chainId: number) {
     try {
       const result = await fetchTopPools(chainId);
 
-      // Enrich V3/V4 fee rates from on-chain RPC
       let enriched: PoolData[];
       try {
         enriched = await enrichV3FeeRates(result.pools, chainId);
@@ -40,34 +42,34 @@ export function usePoolData(chainId: number) {
         enriched = result.pools;
       }
 
+      samplerRef.current.recordBatch(
+        enriched
+          .filter((p) => p.windows.m5.volume !== null)
+          .map((p) => ({
+            pairAddress: p.pairAddress,
+            chainId: p.chainId,
+            volM5: p.windows.m5.volume as number,
+          })),
+      );
+
       poolsRef.current = enriched;
-      setPools(enriched);
+      setRawPools(enriched);
       setLastUpdate(new Date());
       setStatus('success');
       setWarnings(result.errors);
-
-      if (enriched.length === 0 && result.errors.length === 0) {
-        setError(null);
-      } else if (result.partial) {
-        setError(null);
-        // Warnings are shown separately
-      } else {
-        setError(null);
-      }
+      setError(null);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to fetch data';
 
       if (hadPreviousData && !manual) {
-        // Stale-while-revalidate: keep old data, show warning
         setWarnings([`刷新失败: ${msg} (showing stale data)`]);
         setStatus('success');
       } else {
-        // No previous data or manual refresh: show full error
         setError(msg);
         setStatus('error');
         if (manual) {
           poolsRef.current = [];
-          setPools([]);
+          setRawPools([]);
         }
       }
     }
@@ -76,7 +78,7 @@ export function usePoolData(chainId: number) {
 
   useEffect(() => {
     poolsRef.current = [];
-    setPools([]);
+    setRawPools([]);
     setError(null);
     setWarnings([]);
     setStatus('loading');
@@ -87,6 +89,11 @@ export function usePoolData(chainId: number) {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [fetchData]);
+
+  const pools = useMemo(
+    () => applyTimeWindow(rawPools, timeWindow, samplerRef.current),
+    [rawPools, timeWindow],
+  );
 
   const handleSort = useCallback((field: SortField) => {
     setSortField((prev) => {
@@ -121,6 +128,8 @@ export function usePoolData(chainId: number) {
     handleSort,
     minTvl,
     setMinTvl,
+    timeWindow,
+    setTimeWindow,
     refresh: () => fetchData(true),
     totalCount: pools.length,
     isEmpty: status === 'success' && pools.length === 0,

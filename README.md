@@ -101,9 +101,30 @@ Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
 | 交易数 | Trade count in 24h |
 | 操作 | Copy pool address, open block explorer |
 
+## Timeframe Windows
+
+The leaderboard supports multiple time windows for volume, fee, and tx metrics:
+
+| Window | Source | Notes |
+|---|---|---|
+| **5m** | DexScreener `volume.m5`, `txns.m5` | Native rolling 5-minute window |
+| **15m≈** | Local sampling | Approximate: sums 3 non-overlapping m5 readings spaced ~5 min apart from a ring buffer. Shows partial/extrapolated estimates when warming up (<15 min of data). Not a DexScreener native window. |
+| **1h** | DexScreener `volume.h1`, `txns.h1` | Native rolling 1-hour window |
+| **6h** | DexScreener `volume.h6`, `txns.h6` | Native rolling 6-hour window |
+| **24h** | DexScreener `volume.h24`, `txns.h24` | Native rolling 24-hour window (default) |
+
+Switching windows recomputes Fee, Fee/TVL, and Volume from already-fetched data — no additional API calls. The 15m sampler collects m5 snapshots on each 30s refresh and persists to `sessionStorage` so a page refresh doesn't always cold-start.
+
+### 15m Sampler Limitations
+- Requires ~15 minutes of page-open time for a full estimate; before that, values are extrapolated from fewer buckets
+- Accuracy depends on DexScreener's m5 rolling window aligning with the sample timestamps
+- Meme token spikes within a single 5m bucket may be under/over-counted depending on timing
+- Caps at 200 tracked pools; only pools visible in the current table are sampled
+
 ## Features
 - Chain switcher (BSC / Robinhood)
-- Sort by any numeric column (default: Fee descending)
+- Timeframe switcher (5m / 15m≈ / 1h / 6h / 24h)
+- Sort by any numeric column (default: Fee descending for active window)
 - Hide low-TVL pools (<$1K toggle)
 - Auto-refresh every 30s + manual refresh button
 - Stale-while-revalidate (failed refresh keeps previous data)
@@ -119,7 +140,7 @@ Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
 npm run dev      # Dev server
 npm run build    # Production build
 npm run preview  # Preview production build
-npm test         # Run tests (74 tests)
+npm test         # Run tests (93 tests)
 ```
 
 ## Tech Stack

@@ -3,6 +3,25 @@ import { computeFeeTvlRatio } from '../utils/format';
 
 const DEXSCREENER_API = 'https://api.dexscreener.com';
 
+interface VolumeWindows {
+  m5?: number;
+  h1?: number;
+  h6?: number;
+  h24: number;
+}
+
+interface TxnWindow {
+  buys: number;
+  sells: number;
+}
+
+interface TxnWindows {
+  m5?: TxnWindow;
+  h1?: TxnWindow;
+  h6?: TxnWindow;
+  h24: TxnWindow;
+}
+
 export interface DexScreenerPair {
   chainId: string;
   dexId: string;
@@ -12,8 +31,8 @@ export interface DexScreenerPair {
   baseToken: { address: string; name: string; symbol: string };
   quoteToken: { address: string; name: string; symbol: string };
   priceUsd: string | null;
-  volume: { h24: number };
-  txns: { h24: { buys: number; sells: number } };
+  volume: VolumeWindows;
+  txns: TxnWindows;
   liquidity: { usd: number };
   fdv: number | null;
   pairCreatedAt: number;
@@ -265,6 +284,9 @@ export async function fetchTopPools(chainId: number): Promise<FetchResult> {
         ? pair.txns.h24.buys + pair.txns.h24.sells
         : null;
 
+      const txnTotal = (w?: { buys: number; sells: number }) =>
+        w ? w.buys + w.sells : null;
+
       return {
         id: `${pair.pairAddress}-${pair.dexId}`,
         pairAddress: pair.pairAddress,
@@ -283,6 +305,12 @@ export async function fetchTopPools(chainId: number): Promise<FetchResult> {
         volumeUsd: vol24 || null,
         txCount,
         pairSymbol: `${pair.baseToken.symbol}/${pair.quoteToken.symbol}`,
+        windows: {
+          m5: { volume: pair.volume?.m5 ?? null, txCount: txnTotal(pair.txns?.m5) },
+          h1: { volume: pair.volume?.h1 ?? null, txCount: txnTotal(pair.txns?.h1) },
+          h6: { volume: pair.volume?.h6 ?? null, txCount: txnTotal(pair.txns?.h6) },
+          h24: { volume: vol24 || null, txCount },
+        },
       };
     })
     .filter((p) => p.tvlUsd !== null && p.tvlUsd > 0)

@@ -55,3 +55,8 @@ export function estimateFeeFromBps(volumeUsd: number | null, feeRatePercent: num
   if (volumeUsd === null || volumeUsd === 0) return null;
   return volumeUsd * (feeRatePercent / 100);
 }
+
+export function estimateFeeUsdFromRate(volume: number | null, feeRatePercent: number | null): number | null {
+  if (feeRatePercent === null || !volume) return null;
+  return volume * (feeRatePercent / 100);
+}
