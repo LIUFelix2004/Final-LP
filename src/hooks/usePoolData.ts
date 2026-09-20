@@ -9,7 +9,7 @@ const REFRESH_INTERVAL = 30_000;
 
 export type FetchStatus = 'idle' | 'loading' | 'success' | 'error';
 
-export function usePoolData(chainId: number) {
+export function usePoolData(chainId: number, onRefreshComplete?: (pools: PoolData[]) => void) {
   const [rawPools, setRawPools] = useState<PoolData[]>([]);
   const [status, setStatus] = useState<FetchStatus>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -23,6 +23,8 @@ export function usePoolData(chainId: number) {
   const isManualRefresh = useRef(false);
   const poolsRef = useRef<PoolData[]>([]);
   const samplerRef = useRef(new VolumeSampler());
+  const onRefreshRef = useRef(onRefreshComplete);
+  onRefreshRef.current = onRefreshComplete;
 
   const fetchData = useCallback(async (manual = false) => {
     isManualRefresh.current = manual;
@@ -58,6 +60,7 @@ export function usePoolData(chainId: number) {
       setStatus('success');
       setWarnings(result.errors);
       setError(null);
+      onRefreshRef.current?.(enriched);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to fetch data';
 

@@ -13,6 +13,8 @@ interface Props {
   isEmpty: boolean;
   hasError: boolean;
   timeWindow: TimeWindow;
+  isWatchlisted: (addr: string) => boolean;
+  onToggleWatchlist: (addr: string) => void;
 }
 
 const DEX_COLORS: Record<string, string> = {
@@ -82,7 +84,7 @@ function copyToClipboard(text: string) {
   });
 }
 
-export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty, hasError, timeWindow }: Props) {
+export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty, hasError, timeWindow, isWatchlisted, onToggleWatchlist }: Props) {
   const chain = CHAINS[chainId];
   const twLabel = TIME_WINDOW_LABELS[timeWindow];
 
@@ -154,6 +156,13 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
                 <td className="right mono">{formatUsd(pool.volumeUsd, { compact: true })}</td>
                 <td className="right mono">{formatNumber(pool.txCount)}</td>
                 <td className="center actions-cell">
+                  <button
+                    className={`action-btn star-btn ${isWatchlisted(pool.pairAddress) ? 'starred' : ''}`}
+                    title={isWatchlisted(pool.pairAddress) ? '取消自选' : '加入自选'}
+                    onClick={() => onToggleWatchlist(pool.pairAddress)}
+                  >
+                    {isWatchlisted(pool.pairAddress) ? '★' : '☆'}
+                  </button>
                   <button
                     className="action-btn"
                     title="复制合约地址"
