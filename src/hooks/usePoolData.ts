@@ -33,8 +33,10 @@ export function usePoolData(
   const samplerRef = useRef(new VolumeSampler());
   const onRefreshRef = useRef(onRefreshComplete);
   onRefreshRef.current = onRefreshComplete;
+  const generationRef = useRef(0);
 
   const fetchData = useCallback(async (manual = false) => {
+    const gen = generationRef.current;
     isManualRefresh.current = manual;
     const hadPreviousData = poolsRef.current.length > 0;
 
@@ -47,11 +49,20 @@ export function usePoolData(
         ? await fetchGmgnPools(chainId, gmgnSettings)
         : await fetchTopPools(chainId);
 
+      if (gen !== generationRef.current) return;
+
       let enriched: PoolData[];
       try {
         enriched = await enrichV3FeeRates(result.pools, chainId);
       } catch {
         enriched = result.pools;
+      }
+
+      if (gen !== generationRef.current) return;
+
+      const wrongChain = enriched.some((p) => p.chainId !== chainId);
+      if (wrongChain) {
+        enriched = enriched.filter((p) => p.chainId === chainId);
       }
 
       samplerRef.current.recordBatch(
@@ -72,10 +83,12 @@ export function usePoolData(
       setError(null);
       onRefreshRef.current?.(enriched);
     } catch (err) {
+      if (gen !== generationRef.current) return;
+
       const msg = err instanceof Error ? err.message : 'Failed to fetch data';
 
       if (hadPreviousData && !manual) {
-        setWarnings([`刷新失败: ${msg} (showing stale data)`]);
+        setWarnings([`刷新失败: ${msg}`]);
         setStatus('success');
       } else {
         setError(msg);
@@ -90,6 +103,7 @@ export function usePoolData(
   }, [chainId, discoveryMode, gmgnSettings]);
 
   useEffect(() => {
+    generationRef.current += 1;
     poolsRef.current = [];
     setRawPools([]);
     setError(null);

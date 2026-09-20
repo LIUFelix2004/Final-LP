@@ -48,7 +48,7 @@ const BASE_COLUMNS: ColumnDef[] = [
   { key: 'pair', label: '交易对', sortable: false, align: 'left' },
   { key: 'smartBuyCount', label: '聪明钱买入', sortable: true, align: 'right', title: 'Smart money 24h buy count (GMGN)', gmgnOnly: true },
   { key: 'smartBuyUsdSum', label: '聪明钱买入额', sortable: true, align: 'right', title: 'Smart money buy volume USD (GMGN)', gmgnOnly: true },
-  { key: 'lastSmartBuyAt', label: '最近买入', sortable: false, align: 'right', title: 'Time since last smart money buy (GMGN)', gmgnOnly: true },
+  { key: 'lastSmartBuyAt', label: '最近买入', sortable: false, align: 'right', title: 'Time since last smart money buy; falls back to token creation time when unavailable (GMGN)', gmgnOnly: true },
   { key: 'priceUsd', label: '价格', sortable: true, align: 'right' },
   { key: 'feeRate', label: '费率', sortable: true, align: 'right', title: 'V2: fixed rate; V3/CL: on-chain fee(); V4: pool key fee' },
   {

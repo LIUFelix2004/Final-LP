@@ -7,7 +7,7 @@ import {
 import type { FetchResult } from './dexscreener';
 
 const GMGN_PRIMARY = '/api/gmgn';
-const GMGN_FALLBACK = '/api/gmgn-fallback';
+const GMGN_FALLBACK = '/api/gmgnq';
 
 export const GMGN_CHAIN_SLUG: Record<number, string> = {
   56: 'bsc',
@@ -232,9 +232,8 @@ export async function fetchGmgnPools(
       if (smrt) {
         pool.smartBuyCount = smrt.smart_degen_count ?? smrt.smart_buy_24h;
         pool.smartBuyUsdSum = smrt.smartBuyVolumeUsd;
-        pool.lastSmartBuyAt = smrt.last_smart_buy_timestamp
-          ? smrt.last_smart_buy_timestamp * 1000
-          : undefined;
+        const smartTs = smrt.last_smart_buy_timestamp ?? (smrt.open_timestamp > 0 ? smrt.open_timestamp : undefined);
+        pool.lastSmartBuyAt = smartTs ? smartTs * 1000 : undefined;
       }
       return pool;
     })
