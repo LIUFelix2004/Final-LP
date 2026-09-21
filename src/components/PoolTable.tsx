@@ -236,7 +236,9 @@ export function PoolTable({ pools, sortField, sortDir, onSort, chainId, isEmpty,
                     </td>
                   )}
                   <td className="right mono">{formatPrice(pool.priceUsd)}</td>
-                  <td className="right mono">{formatFeeRate(pool.feeRate)}</td>
+                  <td className="right mono" title={pool.v4DynamicFee ? 'V4 dynamic hook fee' : undefined}>
+                    {pool.v4DynamicFee ? '⚡' : formatFeeRate(pool.feeRate)}
+                  </td>
                   <td className="right mono fee-value">{formatUsd(pool.feeUsd, { compact: true })}</td>
                   <td className="right mono">{formatUsd(pool.tvlUsd, { compact: true })}</td>
                   <td className="right mono fee-tvl-value">{formatPercent(pool.feeTvlRatio)}</td>

@@ -4,7 +4,7 @@ import { fetchTopPools } from '../services/dexscreener';
 import { fetchGmgnPools } from '../services/gmgn';
 import type { GmgnSettings } from '../services/gmgn';
 import { DEFAULT_GMGN_SETTINGS } from '../services/gmgn';
-import { enrichV3FeeRates } from '../services/onchain';
+import { enrichFeeRates } from '../services/onchain';
 import { VolumeSampler } from '../services/sampler';
 import { applyTimeWindow } from '../utils/windowCalc';
 
@@ -53,7 +53,7 @@ export function usePoolData(
 
       let enriched: PoolData[];
       try {
-        enriched = await enrichV3FeeRates(result.pools, chainId);
+        enriched = await enrichFeeRates(result.pools, chainId);
       } catch {
         enriched = result.pools;
       }

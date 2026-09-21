@@ -59,7 +59,7 @@ Robinhood:
 - **V2 pools**: Fixed fee rate from dexId (PancakeSwap 0.25%, Uniswap/others 0.30%, BiSwap 0.10%)
 - **V3 pools**: On-chain `fee()` call via RPC multicall (Uniswap V3 returns fee in hundredths of bip, e.g. 3000 = 0.30%)
 - **UP33 CL (Slipstream)**: On-chain `tickSpacing()` on pool + `tickSpacingToFee(ts)` on factory via RPC
-- **V4 pools**: Fee rate shown when DexScreener indexes them and on-chain read succeeds; otherwise "—"
+- **V4 pools**: On-chain `extsload` on PoolManager reads `lpFee` from pool slot0. Static-fee pools show numeric rate; dynamic-fee hook pools (flag >= 0x800000) show ⚡ with tooltip. Falls back to "—" when poolId doesn't match pairAddress or RPC fails.
 - Fallback: "—" when RPC is unreachable or fee cannot be determined
 
 ### Fee Estimation Formula
@@ -80,7 +80,8 @@ Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
 - **Total failure**: Error bar with retry button; empty state distinguishes "fetch failed" from "zero pools on chain"
 
 ### Known Gaps
-- V4 pools appear only when DexScreener returns them with `labels: ["v4"]`; as of Sep 2026 DexScreener may not index V4 pools on BSC or Robinhood yet
+- **V4 fee reads**: V4 pool fees are read from PoolManager via `extsload` using the pairAddress as poolId (best-effort). This works when DexScreener's pairAddress matches the actual V4 poolId. Pools with dynamic-fee hooks (fee flag >= 0x800000) show a lightning bolt icon with tooltip "V4 dynamic hook fee". V4 pools where the fee can't be determined show "—".
+- V4 pools appear only when DexScreener returns them with `labels: ["v4"]`; DexScreener V4 indexing coverage varies by chain
 - UP33 pools on Robinhood are matched from DexScreener dexIds `up`, `up_*`, `up33`, `aerodrome`, and `velodrome`
 - On-chain fee reads fail silently if RPC is down — those pools show "—" for fee rate and estimated fee
 - Trade count is buys + sells from DexScreener 24h window
@@ -93,7 +94,7 @@ Fee/TVL = (Fee USD / TVL) x 100  (as percentage)
 | # | Rank (gold/silver/bronze for top 3) |
 | 交易对 | DEX tag + version (V2/V3/V4) + pair symbol |
 | 价格 | USD price (many decimals for meme tokens) |
-| 费率 | Pool fee rate %. V2: fixed. V3/CL: from on-chain RPC. |
+| 费率 | Pool fee rate %. V2: fixed. V3/CL: on-chain RPC fee(). V4: PoolManager extsload. ⚡ = dynamic hook fee. |
 | Fee (24h)* | **Estimated** 24h fees = Volume x fee rate |
 | TVL | Total value locked (from DexScreener) |
 | Fee/TVL | Estimated Fee / TVL ratio % |
@@ -132,7 +133,7 @@ Switching windows recomputes Fee, Fee/TVL, and Volume from already-fetched data 
 - Last update timestamp display
 - Copy pool address to clipboard
 - Block explorer links
-- On-chain V3 fee tier enrichment via RPC
+- On-chain V3/V4 fee tier enrichment via RPC (V3: pool.fee(), V4: PoolManager.extsload)
 
 ## GMGN Mode (Dev Only)
 
@@ -142,6 +143,8 @@ GMGN 土狗 discovery mode requires the Vite dev proxy (`npm run dev`) — it pr
 - `/api/gmgnq` → `gmgn.ai/defi/quotation/v1` (fallback with browser-like headers)
 
 Set `GMGN_API_KEY` in `.env` (see `.env.example`). Without it the GMGN toggle is hidden. The proxy is **not** available in production builds — GMGN mode is dev-only.
+
+For users behind a firewall (e.g. Clash/Verge in CN), set `HTTPS_PROXY=http://127.0.0.1:7897` in `.env`. The proxy uses undici `ProxyAgent` to route GMGN requests through the configured HTTP proxy.
 
 ## Scripts
 

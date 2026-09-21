@@ -28,6 +28,7 @@ export interface PoolData {
   smartBuyCount?: number;
   smartBuyUsdSum?: number;
   lastSmartBuyAt?: number;
+  v4DynamicFee?: boolean;
 }
 
 export interface ChainConfig {

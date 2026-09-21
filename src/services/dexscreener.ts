@@ -58,13 +58,13 @@ const DISCOVERY_TOKENS: Record<number, string[]> = {
 };
 
 const SEARCH_QUERIES: Record<number, string[]> = {
-  56: ['WBNB USDT', 'CAKE BNB', 'USDC USDT'],
-  4663: ['WETH USDG', 'UP WETH', 'VIRTUAL WETH'],
+  56: ['WBNB USDT', 'CAKE BNB', 'USDC USDT', 'uniswap v4 bsc'],
+  4663: ['WETH USDG', 'UP WETH', 'VIRTUAL WETH', 'uniswap v4 robinhood'],
 };
 
-// Known high-liquidity V3/CL pool addresses to seed discovery.
+// Known high-liquidity V3/CL/V4 pool addresses to seed discovery.
 // DexScreener pair-batch endpoint guarantees these appear with correct labels.
-const SEED_V3_POOLS: Record<number, string[]> = {
+const SEED_POOLS: Record<number, string[]> = {
   56: [
     '0x36696169C63e42cd08ce11f5deeBbCeBae652050', // PancakeSwap V3 USDT/WBNB 0.05%
     '0x6fe9E9de56356F7eDBfcBB29FAB7cd69471a4869', // Uniswap V3 USDT/WBNB 0.05%
@@ -311,8 +311,8 @@ export async function fetchTopPools(chainId: number): Promise<FetchResult> {
     await sleep(200);
   }
 
-  // Strategy 3: Seed known V3/CL pool addresses via pair-batch endpoint
-  const seedPools = SEED_V3_POOLS[chainId] || [];
+  // Strategy 3: Seed known V3/CL/V4 pool addresses via pair-batch endpoint
+  const seedPools = SEED_POOLS[chainId] || [];
   if (seedPools.length > 0) {
     // DexScreener /latest/dex/pairs/{chain}/{addr1,addr2,...} accepts up to 30 addresses
     const batchSize = 30;
