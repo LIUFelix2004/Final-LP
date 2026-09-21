@@ -1,7 +1,7 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 
-function gmgnProxyPlugin(apiKey: string): Plugin {
+function gmgnProxyPlugin(apiKey: string, proxyUrl: string): Plugin {
   return {
     name: 'gmgn-proxy',
     configureServer(server) {
@@ -36,7 +36,7 @@ function gmgnProxyPlugin(apiKey: string): Plugin {
         const upstream = `${target}${rewrittenPath}`
 
         try {
-          const proxyEnv = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy
+          const proxyEnv = proxyUrl || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy
           let fetchFn: typeof globalThis.fetch = globalThis.fetch
           let fetchInit: RequestInit & { dispatcher?: unknown } = { headers }
 
@@ -80,9 +80,14 @@ function gmgnProxyPlugin(apiKey: string): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiKey = env.GMGN_API_KEY || ''
+  const proxyUrl =
+    env.HTTPS_PROXY || env.HTTP_PROXY ||
+    process.env.HTTPS_PROXY || process.env.HTTP_PROXY ||
+    process.env.https_proxy || process.env.http_proxy ||
+    ''
 
   return {
-    plugins: [react(), gmgnProxyPlugin(apiKey)],
+    plugins: [react(), gmgnProxyPlugin(apiKey, proxyUrl)],
     define: {
       'import.meta.env.VITE_GMGN_CONFIGURED': JSON.stringify(apiKey ? 'true' : 'false'),
     },

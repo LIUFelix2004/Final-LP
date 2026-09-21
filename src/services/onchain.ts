@@ -119,6 +119,7 @@ export function extractLpFeeFromSlot0(slot0: bigint): number | null {
   if (slot0 === 0n) return null;
   const lpFee = Number((slot0 >> 208n) & 0xFFFFFFn);
   if (lpFee >= V4_DYNAMIC_FEE_FLAG) return null;
+  if (lpFee === 0) return null;
   return lpFee;
 }
 
@@ -242,7 +243,10 @@ export async function enrichFeeRates(
           if (lpFee !== null) {
             feeMap.set(v4Pools[i].id, v4FeeToPercent(lpFee));
           } else if (slot0 !== 0n) {
-            v4DynamicSet.add(v4Pools[i].id);
+            const rawFee = Number((slot0 >> 208n) & 0xFFFFFFn);
+            if (rawFee >= V4_DYNAMIC_FEE_FLAG) {
+              v4DynamicSet.add(v4Pools[i].id);
+            }
           }
         }
       }

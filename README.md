@@ -144,7 +144,7 @@ GMGN 土狗 discovery mode requires the Vite dev proxy (`npm run dev`) — it pr
 
 Set `GMGN_API_KEY` in `.env` (see `.env.example`). Without it the GMGN toggle is hidden. The proxy is **not** available in production builds — GMGN mode is dev-only.
 
-For users behind a firewall (e.g. Clash/Verge in CN), set `HTTPS_PROXY=http://127.0.0.1:7897` in `.env`. The proxy uses undici `ProxyAgent` to route GMGN requests through the configured HTTP proxy.
+For users behind a firewall (e.g. Clash/Verge in CN), set `HTTPS_PROXY=http://127.0.0.1:7897` in `.env`. The proxy uses undici `ProxyAgent` to route GMGN requests through the configured HTTP proxy. Windows: `.env` 的 `HTTPS_PROXY` 会被 Vite 插件读取，无需手动 export。
 
 ## Scripts
 

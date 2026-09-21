@@ -27,6 +27,14 @@ describe('extractLpFeeFromSlot0', () => {
     expect(extractLpFeeFromSlot0(slot0)).toBe(10000);
   });
 
+  it('returns null when lpFee bits are zero (unread, not 0% fee)', () => {
+    // Non-zero slot0 (has sqrtPriceX96) but lpFee bits = 0
+    const sqrtPrice = 79228162514264337593543950336n;
+    const tick = 100n;
+    const slot0 = (0n << 208n) | (0n << 184n) | (tick << 160n) | sqrtPrice;
+    expect(extractLpFeeFromSlot0(slot0)).toBeNull();
+  });
+
   it('returns null for dynamic fee flag (>= 0x800000)', () => {
     const dynamicFee = 0x800000n;
     const sqrtPrice = 1n;
