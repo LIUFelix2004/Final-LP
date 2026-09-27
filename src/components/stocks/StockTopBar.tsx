@@ -80,13 +80,6 @@ export function StockTopBar({
           step={100}
         />
         <span className="stocks-amount-label">USDG</span>
-        {discovering && (
-          <span className="stocks-discovering">
-            发现池 {discoveryProgress.current}/{discoveryProgress.total}
-          </span>
-        )}
-      </div>
-      <div className="stocks-topbar-right">
         <select
           className="stocks-sort-select"
           value={sortWindow}
@@ -96,6 +89,13 @@ export function StockTopBar({
             <option key={w} value={w}>{STOCK_SORT_LABELS[w]}</option>
           ))}
         </select>
+        {discovering && (
+          <span className="stocks-discovering">
+            发现池 {discoveryProgress.current}/{discoveryProgress.total}
+          </span>
+        )}
+      </div>
+      <div className="stocks-topbar-right">
         <label className="stocks-auto-toggle" title="自动刷新">
           <input type="checkbox" checked={autoRefresh} onChange={onAutoRefreshToggle} />
           自动刷新

@@ -1,26 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+vi.mock('./App', () => ({ default: () => null }));
+vi.mock('./components/stocks/StocksBoard', () => ({ StocksBoard: () => null }));
+
+const { loadBoardState, saveBoardState } = await import('./AppShell');
 
 const BOARD_KEY = 'final-lp-board-v2';
-
-function loadBoardState(): { board: 'lp' | 'stocks'; lpChainId?: number } {
-  try {
-    const raw = localStorage.getItem(BOARD_KEY);
-    if (!raw) {
-      const legacy = localStorage.getItem('final-lp-board-v1');
-      if (legacy === 'stocks') return { board: 'stocks' };
-      return { board: 'lp' };
-    }
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && (parsed.board === 'lp' || parsed.board === 'stocks')) {
-      return { board: parsed.board, lpChainId: parsed.lpChainId };
-    }
-  } catch {}
-  return { board: 'lp' };
-}
-
-function saveBoardState(state: { board: string; lpChainId?: number }): void {
-  try { localStorage.setItem(BOARD_KEY, JSON.stringify(state)); } catch {}
-}
 
 describe('AppShell board state persistence', () => {
   beforeEach(() => {
@@ -38,7 +23,7 @@ describe('AppShell board state persistence', () => {
     const prev = loadBoardState();
     expect(prev.lpChainId).toBe(4663);
 
-    const next = { ...prev, board: 'stocks' };
+    const next = { ...prev, board: 'stocks' as const };
     saveBoardState(next);
     const loaded = loadBoardState();
     expect(loaded.board).toBe('stocks');
@@ -48,7 +33,7 @@ describe('AppShell board state persistence', () => {
   it('preserves lpChainId when switching back to lp', () => {
     saveBoardState({ board: 'stocks', lpChainId: 8453 });
     const prev = loadBoardState();
-    const next = { board: 'lp', lpChainId: prev.lpChainId };
+    const next = { board: 'lp' as const, lpChainId: prev.lpChainId };
     saveBoardState(next);
     const loaded = loadBoardState();
     expect(loaded.board).toBe('lp');

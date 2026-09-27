@@ -30,6 +30,7 @@ export function StocksBoard({ onBack }: Props) {
     setAutoRefresh,
     refresh,
     addSymbol,
+    removeSymbol,
     registry,
   } = useStocksBoard();
 
@@ -63,6 +64,7 @@ export function StocksBoard({ onBack }: Props) {
     setAmountUsdg,
     amountAnalysis,
     amountLoading,
+    lastPerpSuccess,
   } = useStockDetail(selectedRow, autoRefresh);
 
   const handleSelect = (row: StockFeeRow) => {
@@ -73,7 +75,7 @@ export function StocksBoard({ onBack }: Props) {
     <div className="stocks-board">
       <StockTopBar
         onBack={onBack}
-        lastUpdate={lastUpdate}
+        lastUpdate={lastPerpSuccess ?? lastUpdate}
         loading={loading}
         discovering={discovering}
         discoveryProgress={discoveryProgress}
@@ -116,6 +118,7 @@ export function StocksBoard({ onBack }: Props) {
             sortWindow={sortWindow}
             selectedSymbol={selectedSymbol}
             onSelect={handleSelect}
+            onRemove={(row) => removeSymbol(row.symbol, row.address)}
           />
         </div>
         <div className="stocks-right">

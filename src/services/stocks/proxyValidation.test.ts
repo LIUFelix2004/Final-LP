@@ -39,6 +39,12 @@ describe('isAllowedCexPath', () => {
     expect(isAllowedCexPath('okx', '/api/v5/public/instruments?instType=SWAP')).toBe(true);
     expect(isAllowedCexPath('okx', '/api/v5/market/tickers?instType=SWAP')).toBe(true);
     expect(isAllowedCexPath('okx', '/api/v5/public/funding-rate?instId=ANY')).toBe(true);
+    expect(isAllowedCexPath('okx', '/api/v5/public/funding-rate?instId=TSLA-USDT-SWAP')).toBe(true);
+  });
+
+  it('rejects okx account paths', () => {
+    expect(isAllowedCexPath('okx', '/api/v5/account/balance')).toBe(false);
+    expect(isAllowedCexPath('okx', '/api/v5/trade/order')).toBe(false);
   });
 
   it('allows valid gate paths', () => {
@@ -49,6 +55,12 @@ describe('isAllowedCexPath', () => {
   it('allows valid bybit paths', () => {
     expect(isAllowedCexPath('bybit', '/v5/market/instruments-info?category=linear&limit=1000')).toBe(true);
     expect(isAllowedCexPath('bybit', '/v5/market/tickers?category=linear')).toBe(true);
+    expect(isAllowedCexPath('bybit', '/v5/market/funding/history?category=linear&symbol=TSLA')).toBe(true);
+  });
+
+  it('rejects bybit paths with invalid segments', () => {
+    expect(isAllowedCexPath('bybit', '/v5/market/../account')).toBe('traversal');
+    expect(isAllowedCexPath('bybit', '/v5/account/balance')).toBe(false);
   });
 
   it('allows unknown exchanges (no whitelist)', () => {

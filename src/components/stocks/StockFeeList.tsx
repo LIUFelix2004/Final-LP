@@ -8,6 +8,7 @@ interface Props {
   sortWindow: StockSortWindow;
   selectedSymbol: string | null;
   onSelect: (row: StockFeeRow) => void;
+  onRemove?: (row: StockFeeRow) => void;
 }
 
 function getFeeValue(row: StockFeeRow, window: StockSortWindow): number | null {
@@ -32,7 +33,7 @@ function formatFeeUsd(value: number | null): string {
   return `$${value.toFixed(0)}`;
 }
 
-export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSelect }: Props) {
+export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSelect, onRemove }: Props) {
   if (loading && rows.length === 0) {
     return (
       <div className="stocks-list-loading">
@@ -67,7 +68,16 @@ export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSele
           >
             <span className="col-rank">{i + 1}</span>
             <span className="col-symbol">
-              <span className="stock-sym">{row.symbol}</span>
+              <span className="stock-sym">
+                {row.symbol}
+                {onRemove && (
+                  <button
+                    className="stock-remove-btn"
+                    onClick={e => { e.stopPropagation(); onRemove(row); }}
+                    title={`移除 ${row.symbol}`}
+                  >&times;</button>
+                )}
+              </span>
               <span className="stock-name">{row.name}</span>
             </span>
             {ALL_WINDOWS.map(w => {

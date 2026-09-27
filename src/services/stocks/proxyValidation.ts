@@ -2,7 +2,7 @@ const CEX_PATH_WHITELIST: Record<string, RegExp> = {
   binance: /^\/fapi\/v1\/(exchangeInfo|premiumIndex|ticker\/24hr|fundingInfo|fundingRate|klines)(\?|$)/,
   okx: /^\/api\/v5\/(public|market)\/[a-zA-Z-]+(\?|$)/,
   gate: /^\/api\/v4\/futures\/usdt\/(contracts|tickers|funding_rate)(\?|$)/,
-  bybit: /^\/v5\/market\/[a-zA-Z-]+(\?|$)/,
+  bybit: /^\/v5\/market\/[a-zA-Z-]+(\/[a-zA-Z-]+)*(\?|$)/,
 };
 
 export function isAllowedCexPath(exchange: string, rawPath: string): boolean | 'traversal' {

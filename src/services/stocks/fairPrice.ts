@@ -1,4 +1,5 @@
 import type { PerpQuote, FairPriceResult, FundingPoint, FundingBucket, StockSignal, MarketSession } from '../../types/stocks';
+import type { AmountAnalysis } from './quote';
 import { PREMIUM_THRESHOLD, MIN_PERP_VOLUME_USD, MIN_POOL_LIQUIDITY_WARN, EXCHANGE_META } from '../../config/stocks';
 
 export function median(values: number[]): number | null {
@@ -160,6 +161,8 @@ export function buildSignals(
   session: MarketSession,
   shortBest: PerpQuote | null,
   longBest: PerpQuote | null,
+  amountAnalysis?: AmountAnalysis | null,
+  amountUsdg?: number,
 ): StockSignal[] {
   const signals: StockSignal[] = [];
 
@@ -227,6 +230,32 @@ export function buildSignals(
       text: `链上主池流动性不足 $${(MIN_POOL_LIQUIDITY_WARN / 1000).toFixed(0)}k，价格可能失真`,
       color: 'orange',
     });
+  }
+
+  if (amountAnalysis && amountUsdg && amountUsdg > 0) {
+    const amt = `$${amountUsdg.toLocaleString()}`;
+    if (amountAnalysis.buyResult) {
+      const pStr = amountAnalysis.buyPremium !== null ? `${amountAnalysis.buyPremium >= 0 ? '+' : ''}${(amountAnalysis.buyPremium * 100).toFixed(2)}%` : '';
+      const via = amountAnalysis.buyResult.quotedVia;
+      signals.push({
+        text: `链上买入 ${amt}：成交均价 $${amountAnalysis.buyResult.effectivePrice.toFixed(4)}，较公允价 ${pStr}（${via}）`,
+        color: amountAnalysis.buyPremium !== null && amountAnalysis.buyPremium > 0.005 ? 'red' : 'green',
+      });
+    }
+    if (amountAnalysis.sellResult) {
+      const pStr = amountAnalysis.sellPremium !== null ? `${amountAnalysis.sellPremium >= 0 ? '+' : ''}${(amountAnalysis.sellPremium * 100).toFixed(2)}%` : '';
+      const via = amountAnalysis.sellResult.quotedVia;
+      signals.push({
+        text: `链上卖出 ${amt}：成交均价 $${amountAnalysis.sellResult.effectivePrice.toFixed(4)}，较公允价 ${pStr}（${via}）`,
+        color: amountAnalysis.sellPremium !== null && amountAnalysis.sellPremium < -0.005 ? 'red' : 'green',
+      });
+    }
+    if (!amountAnalysis.buyResult && !amountAnalysis.sellResult) {
+      signals.push({
+        text: `链上 ${amt} 无可报价的 Uniswap 池`,
+        color: 'gray',
+      });
+    }
   }
 
   return signals;

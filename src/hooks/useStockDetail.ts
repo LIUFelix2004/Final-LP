@@ -7,6 +7,10 @@ import { computeFairPrice, computePremium, bestShortExchange, bestLongExchange, 
 import { getUsMarketSession } from '../services/stocks/marketSession';
 import { analyzeAmount, type AmountAnalysis } from '../services/stocks/quote';
 
+const STALE_MAX_MS = 120_000;
+const EXCHANGE_KEYS = ['binance', 'okx', 'gate', 'bybit', 'hyperliquid'] as const;
+type ExchangeKey = typeof EXCHANGE_KEYS[number];
+
 export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boolean) {
   const [perpData, setPerpData] = useState<AllPerpData | null>(null);
   const [quotes, setQuotes] = useState<PerpQuote[]>([]);
@@ -18,14 +22,13 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
   const [perpLoading, setPerpLoading] = useState(false);
   const [klineData, setKlineData] = useState<unknown[] | null>(null);
   const [klineSource, setKlineSource] = useState<string | null>(null);
+  const [perpStale, setPerpStale] = useState(false);
+  const [lastPerpSuccess, setLastPerpSuccess] = useState<Date | null>(null);
 
   const generationRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fundingCacheRef = useRef<Map<string, { data: Record<string, { points: Array<{ time: number; rate: number }>; intervalHours: number }>; time: number }>>(new Map());
-  const lastGoodPerpRef = useRef<{ data: AllPerpData; time: number } | null>(null);
-  const [perpStale, setPerpStale] = useState(false);
-
-  const STALE_MAX_MS = 120_000;
+  const lastGoodPerExRef = useRef<Map<ExchangeKey, { data: AllPerpData[ExchangeKey]; time: number }>>(new Map());
 
   const fetchPerps = useCallback(async () => {
     const gen = ++generationRef.current;
@@ -33,21 +36,43 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     try {
       const data = await fetchAllPerpData();
       if (gen !== generationRef.current) return;
-      setPerpData(data);
-      setPerpErrors(data.errors);
-      lastGoodPerpRef.current = { data, time: Date.now() };
-      setPerpStale(false);
+
+      let anyStale = false;
+      const errors = [...data.errors];
+      const patched: AllPerpData = { ...data };
+
+      for (const key of EXCHANGE_KEYS) {
+        if (data[key] !== null) {
+          lastGoodPerExRef.current.set(key, { data: data[key], time: Date.now() });
+        } else {
+          const cached = lastGoodPerExRef.current.get(key);
+          if (cached && Date.now() - cached.time <= STALE_MAX_MS) {
+            (patched as unknown as Record<string, unknown>)[key] = cached.data;
+            anyStale = true;
+            const exName = key.charAt(0).toUpperCase() + key.slice(1);
+            if (!errors.some(e => e.startsWith(`${exName}:`))) {
+              errors.push(`${exName}: 数据延迟`);
+            } else {
+              const idx = errors.findIndex(e => e.startsWith(`${exName}:`));
+              if (idx >= 0) errors[idx] = errors[idx] + '（数据延迟）';
+            }
+          }
+        }
+      }
+
+      patched.errors = errors;
+      setPerpData(patched);
+      setPerpErrors(errors);
+      setPerpStale(anyStale);
+      if (!anyStale) setLastPerpSuccess(new Date());
+      else if (lastGoodPerExRef.current.size > 0) {
+        const times = [...lastGoodPerExRef.current.values()].map(v => v.time);
+        setLastPerpSuccess(new Date(Math.max(...times)));
+      }
     } catch (err) {
       if (gen !== generationRef.current) return;
-      const stale = lastGoodPerpRef.current;
-      if (stale && Date.now() - stale.time <= STALE_MAX_MS) {
-        setPerpData(stale.data);
-        setPerpErrors([...stale.data.errors, '数据延迟']);
-        setPerpStale(true);
-      } else {
-        setPerpErrors([err instanceof Error ? err.message : String(err)]);
-        setPerpStale(false);
-      }
+      setPerpErrors([err instanceof Error ? err.message : String(err)]);
+      setPerpStale(false);
     } finally {
       setPerpLoading(false);
     }
@@ -66,6 +91,18 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
   const selectedSymbol = selectedRow?.symbol ?? null;
   const selectedOnchainPrice = selectedRow?.onchainPrice ?? null;
   const selectedMainPoolLiq = selectedRow?.mainPool?.liquidityUsd ?? null;
+
+  const [amountUsdg, setAmountUsdg] = useState(() => {
+    try {
+      const saved = localStorage.getItem('stocks-amount-usdg-v1');
+      if (saved) { const n = Number(saved); if (Number.isFinite(n) && n > 0) return n; }
+    } catch {}
+    return 2000;
+  });
+  const [amountAnalysis, setAmountAnalysis] = useState<AmountAnalysis | null>(null);
+  const [amountLoading, setAmountLoading] = useState(false);
+  const amountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const amountGenRef = useRef(0);
 
   useEffect(() => {
     if (!selectedSymbol || !perpData) {
@@ -98,9 +135,11 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
       session,
       shortBest,
       longBest,
+      amountAnalysis,
+      amountUsdg,
     );
     setSignals(sigs);
-  }, [selectedSymbol, selectedOnchainPrice, selectedMainPoolLiq, perpData]);
+  }, [selectedSymbol, selectedOnchainPrice, selectedMainPoolLiq, perpData, amountAnalysis, amountUsdg]);
 
   useEffect(() => {
     if (!selectedRow) {
@@ -171,12 +210,12 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     return () => { cancelled = true; };
   }, [selectedRow?.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [amountUsdg, setAmountUsdg] = useState(2000);
-  const [amountAnalysis, setAmountAnalysis] = useState<AmountAnalysis | null>(null);
-  const [amountLoading, setAmountLoading] = useState(false);
-  const amountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    try { localStorage.setItem('stocks-amount-usdg-v1', String(amountUsdg)); } catch {}
+  }, [amountUsdg]);
 
   useEffect(() => {
+    const gen = ++amountGenRef.current;
     if (!selectedRow || amountUsdg <= 0) {
       setAmountAnalysis(null);
       return;
@@ -185,14 +224,17 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     if (amountTimerRef.current) clearTimeout(amountTimerRef.current);
 
     amountTimerRef.current = setTimeout(async () => {
+      if (gen !== amountGenRef.current) return;
       setAmountLoading(true);
       try {
         const result = await analyzeAmount(selectedRow.pools, amountUsdg, fairResult?.fair ?? null);
+        if (gen !== amountGenRef.current) return;
         setAmountAnalysis(result);
       } catch {
+        if (gen !== amountGenRef.current) return;
         setAmountAnalysis(null);
       } finally {
-        setAmountLoading(false);
+        if (gen === amountGenRef.current) setAmountLoading(false);
       }
     }, 800);
 
@@ -216,5 +258,6 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     setAmountUsdg,
     amountAnalysis,
     amountLoading,
+    lastPerpSuccess,
   };
 }

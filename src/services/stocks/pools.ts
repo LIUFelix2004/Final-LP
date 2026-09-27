@@ -9,8 +9,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 const dsRateLimit = { tokens: 200, lastRefill: Date.now(), maxTokens: 200, refillRate: 200 / 60_000 };
+const dsGlobalPause = { until: 0, backoffMs: 30_000 };
+export let dsRetryPending = 0;
 
 async function waitForDsToken(): Promise<void> {
+  if (Date.now() < dsGlobalPause.until) {
+    const waitMs = dsGlobalPause.until - Date.now();
+    await sleep(waitMs);
+  }
   const now = Date.now();
   const elapsed = now - dsRateLimit.lastRefill;
   dsRateLimit.tokens = Math.min(dsRateLimit.maxTokens, dsRateLimit.tokens + elapsed * dsRateLimit.refillRate);
@@ -24,14 +30,31 @@ async function waitForDsToken(): Promise<void> {
   dsRateLimit.tokens -= 1;
 }
 
+function on429() {
+  dsGlobalPause.until = Date.now() + dsGlobalPause.backoffMs;
+  dsGlobalPause.backoffMs = Math.min(dsGlobalPause.backoffMs * 2, 120_000);
+}
+
+function onSuccess() {
+  dsGlobalPause.backoffMs = 30_000;
+}
+
 async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
   await waitForDsToken();
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      dsRetryPending = attempt > 0 ? dsRetryPending + 1 : dsRetryPending;
       const resp = await fetch(url);
-      if (resp.ok) return resp;
-      if (resp.status === 429 || resp.status >= 500) {
+      if (resp.ok) { onSuccess(); if (attempt > 0) dsRetryPending = Math.max(0, dsRetryPending - 1); return resp; }
+      if (resp.status === 429) {
+        on429();
+        lastError = new Error(`HTTP 429`);
+        if (attempt < maxRetries) {
+          await sleep(dsGlobalPause.backoffMs);
+          continue;
+        }
+      } else if (resp.status >= 500) {
         lastError = new Error(`HTTP ${resp.status}`);
         if (attempt < maxRetries) {
           await sleep(Math.min(1000 * Math.pow(2, attempt), 8000));

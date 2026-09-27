@@ -11,7 +11,7 @@ interface BoardState {
   lpChainId?: number;
 }
 
-function loadBoardState(): BoardState {
+export function loadBoardState(): BoardState {
   try {
     const raw = localStorage.getItem(BOARD_KEY);
     if (!raw) {
@@ -27,7 +27,7 @@ function loadBoardState(): BoardState {
   return { board: 'lp' };
 }
 
-function saveBoardState(state: BoardState): void {
+export function saveBoardState(state: BoardState): void {
   try { localStorage.setItem(BOARD_KEY, JSON.stringify(state)); } catch {}
 }
 

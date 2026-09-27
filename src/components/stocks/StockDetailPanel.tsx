@@ -136,11 +136,16 @@ export function StockDetailPanel({
                   <span className="amount-label">买入有效价</span>
                   <span className="amount-value">{formatStockPrice(amountAnalysis.buyResult.effectivePrice)}</span>
                   {amountAnalysis.buyPremium !== null && (
-                    <span className={`amount-premium ${amountAnalysis.buyPremium > 0.005 ? 'warn' : ''}`}>
-                      溢价 {formatSignedPercent(amountAnalysis.buyPremium)}
+                    <span className={`amount-premium ${Math.abs(amountAnalysis.buyPremium) > 0.005 ? 'warn' : ''}`}>
+                      较公允价 {formatSignedPercent(amountAnalysis.buyPremium)}
                     </span>
                   )}
-                  <span className="amount-pool">{amountAnalysis.buyResult.pool.dex} {amountAnalysis.buyResult.pool.version}</span>
+                  <span className="amount-pool">
+                    {amountAnalysis.buyResult.quotedVia}
+                    {row.mainPool && amountAnalysis.buyResult.pool.pairAddress !== row.mainPool.pairAddress && (
+                      <span className="amount-pool-note">（非主池）{amountAnalysis.buyResult.pool.pairAddress.slice(0, 10)}</span>
+                    )}
+                  </span>
                 </div>
               )}
               {amountAnalysis.sellResult && (
@@ -148,15 +153,20 @@ export function StockDetailPanel({
                   <span className="amount-label">卖出有效价</span>
                   <span className="amount-value">{formatStockPrice(amountAnalysis.sellResult.effectivePrice)}</span>
                   {amountAnalysis.sellPremium !== null && (
-                    <span className={`amount-premium ${amountAnalysis.sellPremium > 0.005 ? 'warn' : ''}`}>
-                      滑价 {formatSignedPercent(amountAnalysis.sellPremium)}
+                    <span className={`amount-premium ${Math.abs(amountAnalysis.sellPremium) > 0.005 ? 'warn' : ''}`}>
+                      较公允价 {formatSignedPercent(amountAnalysis.sellPremium)}
                     </span>
                   )}
-                  <span className="amount-pool">{amountAnalysis.sellResult.pool.dex} {amountAnalysis.sellResult.pool.version}</span>
+                  <span className="amount-pool">
+                    {amountAnalysis.sellResult.quotedVia}
+                    {row.mainPool && amountAnalysis.sellResult.pool.pairAddress !== row.mainPool.pairAddress && (
+                      <span className="amount-pool-note">（非主池）{amountAnalysis.sellResult.pool.pairAddress.slice(0, 10)}</span>
+                    )}
+                  </span>
                 </div>
               )}
               {!amountAnalysis.buyResult && !amountAnalysis.sellResult && (
-                <div className="detail-empty">无可报价的 V3 池</div>
+                <div className="detail-empty">无可报价的 Uniswap 池</div>
               )}
             </div>
           ) : null}

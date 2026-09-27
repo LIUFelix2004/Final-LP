@@ -38,7 +38,13 @@ export function useStocksBoard() {
   const [autoRefresh, setAutoRefresh] = useState(() => {
     try { return localStorage.getItem('stocks-auto-refresh') !== 'false'; } catch { return true; }
   });
-  const [userAddedSymbols, setUserAddedSymbols] = useState<Set<string>>(new Set());
+  const [userAddedSymbols, setUserAddedSymbols] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('stocks-user-symbols-v1');
+      if (saved) { const arr = JSON.parse(saved); if (Array.isArray(arr)) return new Set(arr); }
+    } catch {}
+    return new Set();
+  });
 
   const discoveryGenRef = useRef(0);
   const refreshGenRef = useRef(0);
@@ -241,14 +247,24 @@ export function useStocksBoard() {
   }, [sortWindow]);
 
   const addSymbol = useCallback((symbol: string) => {
-    setUserAddedSymbols(prev => new Set(prev).add(symbol.toUpperCase()));
+    setUserAddedSymbols(prev => {
+      const next = new Set(prev).add(symbol.toUpperCase());
+      try { localStorage.setItem('stocks-user-symbols-v1', JSON.stringify([...next])); } catch {}
+      return next;
+    });
   }, []);
 
-  const removeSymbol = useCallback((address: string) => {
+  const removeSymbol = useCallback((symbol: string, address: string) => {
     removeUserToken(address);
     poolsRef.current.delete(address.toLowerCase());
     setRegistry(prev => prev.filter(t => t.address.toLowerCase() !== address.toLowerCase()));
     setFeeRows(prev => prev.filter(r => r.address.toLowerCase() !== address.toLowerCase()));
+    setUserAddedSymbols(prev => {
+      const next = new Set(prev);
+      next.delete(symbol.toUpperCase());
+      try { localStorage.setItem('stocks-user-symbols-v1', JSON.stringify([...next])); } catch {}
+      return next;
+    });
   }, []);
 
   const [samplerVersion, setSamplerVersion] = useState(0);
@@ -274,7 +290,15 @@ export function useStocksBoard() {
         default: return row.fee.h24;
       }
     };
-    return [...enriched].sort((a, b) => (getVal(b) ?? -1) - (getVal(a) ?? -1));
+    return [...enriched].sort((a, b) => {
+      const va = getVal(a);
+      const vb = getVal(b);
+      if (va === null && vb === null) return (b.fee.h24 ?? -1) - (a.fee.h24 ?? -1);
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      if (vb !== va) return vb - va;
+      return (b.fee.h24 ?? -1) - (a.fee.h24 ?? -1);
+    });
   }, [feeRows, sortWindow, samplerVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
