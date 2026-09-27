@@ -5,6 +5,7 @@ import { useStockDetail } from '../../hooks/useStockDetail';
 import { StockTopBar } from './StockTopBar';
 import { StockFeeList } from './StockFeeList';
 import { StockDetailPanel } from './StockDetailPanel';
+import { RegisterToken } from './RegisterToken';
 import './stocks.css';
 
 interface Props {
@@ -56,6 +57,9 @@ export function StocksBoard({ onBack }: Props) {
       />
       <div className="stocks-panels">
         <div className="stocks-left">
+          <div className="stocks-left-actions">
+            <RegisterToken onRegistered={() => refresh()} />
+          </div>
           <StockFeeList
             rows={rows}
             loading={loading}

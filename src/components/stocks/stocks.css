@@ -429,3 +429,89 @@
   flex-direction: column;
   gap: 8px;
 }
+
+.kline-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.kline-chart svg {
+  width: 100%;
+  display: block;
+}
+.kline-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.kline-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.stocks-left-actions {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stocks-register-btn {
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--accent-blue);
+  font-size: 12px;
+  cursor: pointer;
+}
+.stocks-register-btn:hover {
+  background: var(--bg-hover);
+}
+
+.register-token-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.register-input {
+  flex: 1;
+  min-width: 180px;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: monospace;
+}
+.register-submit {
+  padding: 4px 10px;
+  background: var(--accent-blue);
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.register-submit:disabled {
+  opacity: 0.5;
+}
+.register-cancel {
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.register-msg {
+  font-size: 11px;
+  width: 100%;
+}
+.register-msg.ok { color: var(--accent-green); }
+.register-msg.error { color: var(--accent-red); }
+.register-msg.checking { color: var(--text-muted); }

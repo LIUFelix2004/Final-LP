@@ -2,6 +2,7 @@ import type { StockFeeRow, PerpQuote, FairPriceResult, FundingBucket, StockSigna
 import { FairPriceTable } from './FairPriceTable';
 import { FundingTable } from './FundingTable';
 import { StockSignals } from './StockSignals';
+import { KlineChart } from './KlineChart';
 import { getUsMarketSession } from '../../services/stocks/marketSession';
 import { formatSignedPercent, formatStockPrice } from '../../utils/format';
 
@@ -26,6 +27,7 @@ export function StockDetailPanel({
   fundingBuckets,
   perpErrors,
   perpLoading,
+  klineData,
 }: Props) {
   const session = getUsMarketSession();
 
@@ -66,6 +68,13 @@ export function StockDetailPanel({
           <span className="price-value">{formatSignedPercent(premium)}</span>
         </div>
       </div>
+
+      {klineData && (
+        <div className="stock-detail-section">
+          <h3>K 线 (1H × 168)</h3>
+          <KlineChart data={klineData} />
+        </div>
+      )}
 
       <div className="stock-detail-section">
         <h3>Fair Price 明细</h3>

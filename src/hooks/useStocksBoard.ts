@@ -17,6 +17,7 @@ import {
   savePoolCache,
 } from '../services/stocks/pools';
 import { enrichStockPoolFees } from '../services/stocks/poolFees';
+import { recordSample, enrichRowsWithSampled } from '../services/stocks/feeSampler';
 
 export function useStocksBoard() {
   const [registry, setRegistry] = useState<StockToken[]>([]);
@@ -204,7 +205,15 @@ export function useStocksBoard() {
     setUserAddedSymbols(prev => new Set(prev).add(symbol.toUpperCase()));
   }, []);
 
-  const sortedRows = [...feeRows].sort((a, b) => {
+  useEffect(() => {
+    if (feeRows.length > 0) {
+      recordSample(feeRows);
+    }
+  }, [feeRows]);
+
+  const enrichedRows = feeRows.length > 0 ? enrichRowsWithSampled(feeRows) : feeRows;
+
+  const sortedRows = [...enrichedRows].sort((a, b) => {
     const getVal = (row: StockFeeRow): number | null => {
       switch (sortWindow) {
         case 'm5': return row.fee.m5;
