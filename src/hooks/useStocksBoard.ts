@@ -7,6 +7,7 @@ import {
   saveRegistryCache,
   loadUserTokens,
   mergeRegistries,
+  removeUserToken,
 } from '../services/stocks/registry';
 import {
   discoverPoolsForToken,
@@ -27,7 +28,13 @@ export function useStocksBoard() {
   const [discoveryProgress, setDiscoveryProgress] = useState({ current: 0, total: 0 });
   const [errors, setErrors] = useState<string[]>([]);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [sortWindow, setSortWindow] = useState<StockSortWindow>('h24');
+  const [sortWindow, setSortWindow] = useState<StockSortWindow>(() => {
+    try {
+      const saved = localStorage.getItem('stocks-sort-window-v1');
+      if (saved && ['m5', 'h1', 'h24', 'm30', 'h48', 'h72', 'd7'].includes(saved)) return saved as StockSortWindow;
+    } catch {}
+    return 'h24';
+  });
   const [autoRefresh, setAutoRefresh] = useState(() => {
     try { return localStorage.getItem('stocks-auto-refresh') !== 'false'; } catch { return true; }
   });
@@ -146,6 +153,8 @@ export function useStocksBoard() {
           ...needsDiscovery.filter(t => !seedAddrs.has(t.address.toLowerCase())),
         ];
 
+        const failedTokens: StockToken[] = [];
+
         for (let i = 0; i < prioritized.length; i++) {
           if (cancelled || gen !== discoveryGenRef.current) return;
           const token = prioritized[i];
@@ -161,7 +170,9 @@ export function useStocksBoard() {
               pools: enriched,
               timestamp: Date.now(),
             });
-          } catch { /* skip this token */ }
+          } catch {
+            failedTokens.push(token);
+          }
 
           if (i % 5 === 4 || i === prioritized.length - 1) {
             savePoolCache(poolCache);
@@ -173,6 +184,28 @@ export function useStocksBoard() {
           if (i < prioritized.length - 1) {
             await new Promise(r => setTimeout(r, 200));
           }
+        }
+
+        if (failedTokens.length > 0 && !cancelled && gen === discoveryGenRef.current) {
+          await new Promise(r => setTimeout(r, 3000));
+          for (const token of failedTokens) {
+            if (cancelled || gen !== discoveryGenRef.current) break;
+            try {
+              const pools = await discoverPoolsForToken(token);
+              if (cancelled) break;
+              const enriched = pools.length > 0 ? await enrichStockPoolFees(pools) : [];
+              poolsRef.current.set(token.address.toLowerCase(), enriched);
+              poolCache.set(token.address.toLowerCase(), {
+                tokenAddress: token.address,
+                pools: enriched,
+                timestamp: Date.now(),
+              });
+            } catch { /* retry also failed */ }
+            await new Promise(r => setTimeout(r, 300));
+          }
+          savePoolCache(poolCache);
+          const rows = buildRows(tokens, poolsRef.current);
+          setFeeRows(rows);
         }
 
         setDiscovering(false);
@@ -203,8 +236,19 @@ export function useStocksBoard() {
     try { localStorage.setItem('stocks-auto-refresh', String(autoRefresh)); } catch {}
   }, [autoRefresh]);
 
+  useEffect(() => {
+    try { localStorage.setItem('stocks-sort-window-v1', sortWindow); } catch {}
+  }, [sortWindow]);
+
   const addSymbol = useCallback((symbol: string) => {
     setUserAddedSymbols(prev => new Set(prev).add(symbol.toUpperCase()));
+  }, []);
+
+  const removeSymbol = useCallback((address: string) => {
+    removeUserToken(address);
+    poolsRef.current.delete(address.toLowerCase());
+    setRegistry(prev => prev.filter(t => t.address.toLowerCase() !== address.toLowerCase()));
+    setFeeRows(prev => prev.filter(r => r.address.toLowerCase() !== address.toLowerCase()));
   }, []);
 
   const [samplerVersion, setSamplerVersion] = useState(0);
@@ -246,6 +290,7 @@ export function useStocksBoard() {
     setAutoRefresh,
     refresh,
     addSymbol,
+    removeSymbol,
     registry,
   };
 }

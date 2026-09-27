@@ -5,27 +5,17 @@ import { fetchGateData, buildGateQuote, fetchGateFundingHistory } from './gate';
 import { fetchBybitData, buildBybitQuote, fetchBybitFundingHistory } from './bybit';
 import { fetchHlData, buildHlQuote, fetchHlFundingHistory } from './hyperliquid';
 
-function formatPerpError(exchange: string, reason: unknown): string {
+export function formatPerpError(exchange: string, reason: unknown): string {
   const msg = reason instanceof Error ? reason.message : String(reason);
   try {
     const parsed = JSON.parse(msg);
     if (parsed && typeof parsed === 'object' && parsed.status) {
       const status = Number(parsed.status);
-      if (status === 451 || status === 403) return `${exchange}: 不可达（地区限制）`;
+      if (status === 451 || status === 403) return `${exchange}: 不可达（地区限制，检查 HTTPS_PROXY）`;
       if (status === 418 || status === 429) return `${exchange}: 限流`;
     }
   } catch {}
   if (/timeout|timed?\s*out|abort/i.test(msg)) return `${exchange}: 超时`;
-  if (/502/.test(msg)) {
-    try {
-      const idx = msg.indexOf('{');
-      if (idx >= 0) {
-        const parsed = JSON.parse(msg.slice(idx));
-        if (parsed.status === 451 || parsed.status === 403) return `${exchange}: 不可达（地区限制）`;
-        if (parsed.status === 418 || parsed.status === 429) return `${exchange}: 限流`;
-      }
-    } catch {}
-  }
   return `${exchange}: ${msg}`;
 }
 

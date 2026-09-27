@@ -168,6 +168,27 @@ describe('bucketFunding8hMultiExchange', () => {
   });
 });
 
+describe('bucketFunding8hMultiExchange – HL 48-point', () => {
+  it('sums 8 hourly rates into each 8h bucket (0.00000625×8=0.00005)', () => {
+    const baseTime = Date.UTC(2025, 0, 2, 0, 0, 0);
+    const points: FundingPoint[] = [];
+    for (let i = 0; i < 48; i++) {
+      points.push({ time: baseTime + i * 3600_000, rate: 0.00000625 });
+    }
+    const now = baseTime + 48 * 3600_000;
+    const allPoints = {
+      hyperliquid: { points, intervalHours: 1 },
+    };
+    const buckets = bucketFunding8hMultiExchange(allPoints, now);
+    expect(buckets).toHaveLength(6);
+    for (const bucket of buckets) {
+      if (bucket.rates.hyperliquid !== null) {
+        expect(bucket.rates.hyperliquid).toBeCloseTo(0.00005, 8);
+      }
+    }
+  });
+});
+
 describe('bestShortExchange', () => {
   it('returns quote with highest annualized funding (short earns positive)', () => {
     const quotes = [

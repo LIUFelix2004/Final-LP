@@ -18,6 +18,18 @@ interface GateTicker {
 let contractsCache: Map<string, GateContract> | null = null;
 let contractsCacheTime = 0;
 
+async function throwProxyError(resp: Response, label: string): Promise<never> {
+  if (resp.status === 502) {
+    try {
+      const body = await resp.json();
+      if (body && typeof body === 'object' && body.status) {
+        throw new Error(JSON.stringify({ exchange: 'gate', status: body.status }));
+      }
+    } catch (e) { if (e instanceof Error && e.message.startsWith('{')) throw e; }
+  }
+  throw new Error(`Gate ${label}: ${resp.status}`);
+}
+
 function safeNum(s: string | null | undefined): number | null {
   if (s == null || s === '') return null;
   const n = Number(s);
@@ -98,14 +110,14 @@ export async function fetchGateData(fetchFn: typeof fetch): Promise<{
   const now = Date.now();
   if (!contractsCache || now - contractsCacheTime > 3600_000) {
     const resp = await fetchFn('/api/cex/gate/api/v4/futures/usdt/contracts');
-    if (!resp.ok) throw new Error(`Gate contracts: ${resp.status}`);
+    if (!resp.ok) await throwProxyError(resp, 'contracts');
     const data: GateContract[] = await resp.json();
     contractsCache = parseGateContracts(data);
     contractsCacheTime = now;
   }
 
   const tickerResp = await fetchFn('/api/cex/gate/api/v4/futures/usdt/tickers');
-  if (!tickerResp.ok) throw new Error(`Gate tickers: ${tickerResp.status}`);
+  if (!tickerResp.ok) await throwProxyError(tickerResp, 'tickers');
   const tickerData: GateTicker[] = await tickerResp.json();
 
   return {

@@ -34,6 +34,18 @@ interface OkxIndexTicker {
 let instrumentsCache: Map<string, OkxInstrument> | null = null;
 let instrumentsCacheTime = 0;
 
+async function throwProxyError(resp: Response, label: string): Promise<never> {
+  if (resp.status === 502) {
+    try {
+      const body = await resp.json();
+      if (body && typeof body === 'object' && body.status) {
+        throw new Error(JSON.stringify({ exchange: 'okx', status: body.status }));
+      }
+    } catch (e) { if (e instanceof Error && e.message.startsWith('{')) throw e; }
+  }
+  throw new Error(`OKX ${label}: ${resp.status}`);
+}
+
 function safeNum(s: string | null | undefined): number | null {
   if (s == null || s === '') return null;
   const n = Number(s);
@@ -112,7 +124,7 @@ export async function fetchOkxData(fetchFn: typeof fetch): Promise<{
   const now = Date.now();
   if (!instrumentsCache || now - instrumentsCacheTime > 3600_000) {
     const resp = await fetchFn('/api/cex/okx/api/v5/public/instruments?instType=SWAP');
-    if (!resp.ok) throw new Error(`OKX instruments: ${resp.status}`);
+    if (!resp.ok) await throwProxyError(resp, 'instruments');
     const data = await resp.json();
     instrumentsCache = parseOkxInstruments(data);
     instrumentsCacheTime = now;

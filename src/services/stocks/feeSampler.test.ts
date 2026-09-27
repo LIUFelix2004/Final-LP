@@ -139,6 +139,20 @@ describe('feeSampler', () => {
     expect(getM30SampleCount('UNKNOWN')).toBe(0);
   });
 
+  it('30M boundary at exact 5-min intervals yields 6 not 7 points', () => {
+    const store = _emptyStore();
+    const boundary = new Date('2026-01-01T00:30:00Z').getTime();
+    for (let i = 0; i < 7; i++) {
+      if (!store.fast['TEST']) store.fast['TEST'] = [];
+      store.fast['TEST'].push([boundary - i * 5 * 60_000, 100]);
+    }
+    const cutoff = boundary - 30 * 60_000;
+    const result = _computeM30('TEST', store, boundary);
+    expect(result.count).toBe(6);
+    const pointsInWindow = store.fast['TEST'].filter(([ts]) => ts > cutoff).slice(-6);
+    expect(pointsInWindow).toHaveLength(6);
+  });
+
   it('per-symbol slow samples capped at 400', () => {
     const base = new Date('2026-01-01T00:00:00Z').getTime();
     vi.setSystemTime(base);

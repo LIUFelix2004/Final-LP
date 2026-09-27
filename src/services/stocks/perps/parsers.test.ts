@@ -37,6 +37,25 @@ describe('parseOkxInstruments', () => {
     expect(result.size).toBe(1);
     expect(result.has('AAPL-USDT-SWAP')).toBe(true);
   });
+
+  it('parses instId=ANY bulk response (multiple equity swaps)', () => {
+    const data = {
+      data: [
+        { instId: 'AAPL-USDT-SWAP', instCategory: '3', ctVal: '0.01', ctValCcy: 'AAPL' },
+        { instId: 'TSLA-USDT-SWAP', instCategory: '3', ctVal: '0.01', ctValCcy: 'TSLA' },
+        { instId: 'NVDA-USDT-SWAP', instCategory: '3', ctVal: '0.01', ctValCcy: 'NVDA' },
+        { instId: 'COIN-USDT-SWAP', instCategory: '1', ctVal: '0.01', ctValCcy: 'COIN' },
+        { instId: 'MSTR-USDT-SWAP', instCategory: '3', ctVal: '1', ctValCcy: 'MSTR' },
+      ],
+    };
+    const result = parseOkxInstruments(data);
+    expect(result.size).toBe(4);
+    expect(result.has('AAPL-USDT-SWAP')).toBe(true);
+    expect(result.has('TSLA-USDT-SWAP')).toBe(true);
+    expect(result.has('NVDA-USDT-SWAP')).toBe(true);
+    expect(result.has('COIN-USDT-SWAP')).toBe(false);
+    expect(result.has('MSTR-USDT-SWAP')).toBe(true);
+  });
 });
 
 describe('parseGateContracts', () => {

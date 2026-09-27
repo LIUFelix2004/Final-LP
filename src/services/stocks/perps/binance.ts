@@ -110,6 +110,18 @@ export function parseBinanceFundingHistory(data: Array<{ fundingTime: number; fu
     .sort((a, b) => a.time - b.time);
 }
 
+async function throwProxyError(resp: Response, label: string): Promise<never> {
+  if (resp.status === 502) {
+    try {
+      const body = await resp.json();
+      if (body && typeof body === 'object' && body.status) {
+        throw new Error(JSON.stringify({ exchange: 'binance', status: body.status }));
+      }
+    } catch (e) { if (e instanceof Error && e.message.startsWith('{')) throw e; }
+  }
+  throw new Error(`Binance ${label}: ${resp.status}`);
+}
+
 export async function fetchBinanceData(fetchFn: typeof fetch): Promise<{
   equities: Map<string, BinanceSymbolInfo>;
   premiums: Map<string, BinancePremiumIndex>;
@@ -119,7 +131,7 @@ export async function fetchBinanceData(fetchFn: typeof fetch): Promise<{
   const now = Date.now();
   if (!equitySymbolsCache || now - equitySymbolsCacheTime > 3600_000) {
     const resp = await fetchFn('/api/cex/binance/fapi/v1/exchangeInfo');
-    if (!resp.ok) throw new Error(`Binance exchangeInfo: ${resp.status}`);
+    if (!resp.ok) await throwProxyError(resp, 'exchangeInfo');
     const data = await resp.json();
     equitySymbolsCache = parseBinanceExchangeInfo(data);
     equitySymbolsCacheTime = now;
@@ -141,8 +153,8 @@ export async function fetchBinanceData(fetchFn: typeof fetch): Promise<{
     fetchFn('/api/cex/binance/fapi/v1/ticker/24hr'),
   ]);
 
-  if (!premResp.ok) throw new Error(`Binance premiumIndex: ${premResp.status}`);
-  if (!tickerResp.ok) throw new Error(`Binance ticker: ${tickerResp.status}`);
+  if (!premResp.ok) await throwProxyError(premResp, 'premiumIndex');
+  if (!tickerResp.ok) await throwProxyError(tickerResp, 'ticker');
 
   const premData: BinancePremiumIndex[] = await premResp.json();
   const tickerData: BinanceTicker[] = await tickerResp.json();

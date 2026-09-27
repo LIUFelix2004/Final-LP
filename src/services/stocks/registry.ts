@@ -160,6 +160,20 @@ export function saveUserToken(token: StockToken): void {
   } catch { /* quota exceeded */ }
 }
 
+export function removeUserToken(address: string): void {
+  const existing = loadUserTokens();
+  const filtered = existing.filter(t => t.address.toLowerCase() !== address.toLowerCase());
+  try {
+    localStorage.setItem(USER_TOKENS_KEY, JSON.stringify(filtered));
+  } catch {}
+}
+
+export function searchRegistryBySymbol(registry: StockToken[], query: string): StockToken | null {
+  const q = query.toUpperCase().trim();
+  if (!q) return null;
+  return registry.find(t => t.symbol.toUpperCase() === q) ?? null;
+}
+
 export function mergeRegistries(official: StockToken[], user: StockToken[]): StockToken[] {
   const seen = new Set(official.map(t => t.address.toLowerCase()));
   const merged = [...official];

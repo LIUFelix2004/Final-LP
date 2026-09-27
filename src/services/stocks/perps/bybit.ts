@@ -23,6 +23,18 @@ interface BybitTicker {
 let instrumentsCache: Map<string, BybitInstrument> | null = null;
 let instrumentsCacheTime = 0;
 
+async function throwProxyError(resp: Response, label: string): Promise<never> {
+  if (resp.status === 502) {
+    try {
+      const body = await resp.json();
+      if (body && typeof body === 'object' && body.status) {
+        throw new Error(JSON.stringify({ exchange: 'bybit', status: body.status }));
+      }
+    } catch (e) { if (e instanceof Error && e.message.startsWith('{')) throw e; }
+  }
+  throw new Error(`Bybit ${label}: ${resp.status}`);
+}
+
 function safeNum(s: string | null | undefined): number | null {
   if (s == null || s === '') return null;
   const n = Number(s);
@@ -80,14 +92,14 @@ export async function fetchBybitData(fetchFn: typeof fetch): Promise<{
   const now = Date.now();
   if (!instrumentsCache || now - instrumentsCacheTime > 3600_000) {
     const resp = await fetchFn('/api/cex/bybit/v5/market/instruments-info?category=linear&limit=1000');
-    if (!resp.ok) throw new Error(`Bybit instruments: ${resp.status}`);
+    if (!resp.ok) await throwProxyError(resp, 'instruments');
     const data = await resp.json();
     instrumentsCache = parseBybitInstruments(data);
     instrumentsCacheTime = now;
   }
 
   const tickerResp = await fetchFn('/api/cex/bybit/v5/market/tickers?category=linear');
-  if (!tickerResp.ok) throw new Error(`Bybit tickers: ${tickerResp.status}`);
+  if (!tickerResp.ok) await throwProxyError(tickerResp, 'tickers');
   const tickerData = await tickerResp.json();
 
   const tickers = new Map<string, BybitTicker>();

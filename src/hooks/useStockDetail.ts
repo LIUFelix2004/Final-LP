@@ -5,6 +5,7 @@ import { fetchAllPerpData, getQuotesForStock, fetchFundingHistoryForStock } from
 import type { AllPerpData } from '../services/stocks/perps/index';
 import { computeFairPrice, computePremium, bestShortExchange, bestLongExchange, buildSignals, bucketFunding8hMultiExchange } from '../services/stocks/fairPrice';
 import { getUsMarketSession } from '../services/stocks/marketSession';
+import { analyzeAmount, type AmountAnalysis } from '../services/stocks/quote';
 
 export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boolean) {
   const [perpData, setPerpData] = useState<AllPerpData | null>(null);
@@ -21,6 +22,10 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
   const generationRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fundingCacheRef = useRef<Map<string, { data: Record<string, { points: Array<{ time: number; rate: number }>; intervalHours: number }>; time: number }>>(new Map());
+  const lastGoodPerpRef = useRef<{ data: AllPerpData; time: number } | null>(null);
+  const [perpStale, setPerpStale] = useState(false);
+
+  const STALE_MAX_MS = 120_000;
 
   const fetchPerps = useCallback(async () => {
     const gen = ++generationRef.current;
@@ -30,9 +35,19 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
       if (gen !== generationRef.current) return;
       setPerpData(data);
       setPerpErrors(data.errors);
+      lastGoodPerpRef.current = { data, time: Date.now() };
+      setPerpStale(false);
     } catch (err) {
       if (gen !== generationRef.current) return;
-      setPerpErrors([err instanceof Error ? err.message : String(err)]);
+      const stale = lastGoodPerpRef.current;
+      if (stale && Date.now() - stale.time <= STALE_MAX_MS) {
+        setPerpData(stale.data);
+        setPerpErrors([...stale.data.errors, '数据延迟']);
+        setPerpStale(true);
+      } else {
+        setPerpErrors([err instanceof Error ? err.message : String(err)]);
+        setPerpStale(false);
+      }
     } finally {
       setPerpLoading(false);
     }
@@ -156,6 +171,36 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     return () => { cancelled = true; };
   }, [selectedRow?.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const [amountUsdg, setAmountUsdg] = useState(2000);
+  const [amountAnalysis, setAmountAnalysis] = useState<AmountAnalysis | null>(null);
+  const [amountLoading, setAmountLoading] = useState(false);
+  const amountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!selectedRow || amountUsdg <= 0) {
+      setAmountAnalysis(null);
+      return;
+    }
+
+    if (amountTimerRef.current) clearTimeout(amountTimerRef.current);
+
+    amountTimerRef.current = setTimeout(async () => {
+      setAmountLoading(true);
+      try {
+        const result = await analyzeAmount(selectedRow.pools, amountUsdg, fairResult?.fair ?? null);
+        setAmountAnalysis(result);
+      } catch {
+        setAmountAnalysis(null);
+      } finally {
+        setAmountLoading(false);
+      }
+    }, 800);
+
+    return () => {
+      if (amountTimerRef.current) clearTimeout(amountTimerRef.current);
+    };
+  }, [selectedRow?.symbol, amountUsdg, fairResult?.fair]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return {
     quotes,
     fairResult,
@@ -164,7 +209,12 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     fundingBuckets,
     perpErrors,
     perpLoading,
+    perpStale,
     klineData,
     klineSource,
+    amountUsdg,
+    setAmountUsdg,
+    amountAnalysis,
+    amountLoading,
   };
 }

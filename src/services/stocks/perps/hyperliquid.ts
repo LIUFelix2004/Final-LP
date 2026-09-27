@@ -13,6 +13,18 @@ interface HlAssetCtx {
   dayNtlVlm: string;
 }
 
+async function throwProxyError(resp: Response, label: string): Promise<never> {
+  if (resp.status === 502) {
+    try {
+      const body = await resp.json();
+      if (body && typeof body === 'object' && body.status) {
+        throw new Error(JSON.stringify({ exchange: 'hyperliquid', status: body.status }));
+      }
+    } catch (e) { if (e instanceof Error && e.message.startsWith('{')) throw e; }
+  }
+  throw new Error(`Hyperliquid ${label}: ${resp.status}`);
+}
+
 function safeNum(s: string | null | undefined): number | null {
   if (s == null || s === '') return null;
   const n = Number(s);
@@ -65,7 +77,7 @@ export async function fetchHlData(fetchFn: typeof fetch): Promise<Map<string, { 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ type: 'metaAndAssetCtxs', dex: 'xyz' }),
   });
-  if (!resp.ok) throw new Error(`Hyperliquid metaAndAssetCtxs: ${resp.status}`);
+  if (!resp.ok) await throwProxyError(resp, 'metaAndAssetCtxs');
   const data = await resp.json();
   return parseHlMetaAndAssetCtxs(data);
 }

@@ -8,7 +8,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
-const dsRateLimit = { tokens: 250, lastRefill: Date.now(), maxTokens: 250, refillRate: 250 / 60_000 };
+const dsRateLimit = { tokens: 200, lastRefill: Date.now(), maxTokens: 200, refillRate: 200 / 60_000 };
 
 async function waitForDsToken(): Promise<void> {
   const now = Date.now();
