@@ -8,7 +8,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
+const dsRateLimit = { tokens: 250, lastRefill: Date.now(), maxTokens: 250, refillRate: 250 / 60_000 };
+
+async function waitForDsToken(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - dsRateLimit.lastRefill;
+  dsRateLimit.tokens = Math.min(dsRateLimit.maxTokens, dsRateLimit.tokens + elapsed * dsRateLimit.refillRate);
+  dsRateLimit.lastRefill = now;
+  if (dsRateLimit.tokens < 1) {
+    const waitMs = (1 - dsRateLimit.tokens) / dsRateLimit.refillRate;
+    await sleep(waitMs);
+    dsRateLimit.tokens = 0;
+    dsRateLimit.lastRefill = Date.now();
+  }
+  dsRateLimit.tokens -= 1;
+}
+
 async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
+  await waitForDsToken();
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {

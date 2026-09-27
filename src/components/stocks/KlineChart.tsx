@@ -1,4 +1,7 @@
+import { useState, useCallback } from 'react';
+
 interface Candle {
+  t: number;
   o: number;
   h: number;
   l: number;
@@ -7,7 +10,7 @@ interface Candle {
 }
 
 interface Props {
-  data: number[][] | null;
+  data: unknown[] | null;
   width?: number;
   height?: number;
   source?: string;
@@ -15,15 +18,43 @@ interface Props {
 
 function parseCandle(d: unknown): Candle | null {
   if (Array.isArray(d) && d.length >= 6) {
-    const o = Number(d[1]), h = Number(d[2]), l = Number(d[3]), c = Number(d[4]), v = Number(d[5]);
-    if ([o, h, l, c].every(Number.isFinite)) return { o, h, l, c, v: Number.isFinite(v) ? v : 0 };
+    const t = Number(d[0]), o = Number(d[1]), h = Number(d[2]), l = Number(d[3]), c = Number(d[4]), v = Number(d[5]);
+    if ([o, h, l, c].every(Number.isFinite)) return { t, o, h, l, c, v: Number.isFinite(v) ? v : 0 };
+  }
+  if (d && typeof d === 'object' && !Array.isArray(d)) {
+    const obj = d as Record<string, unknown>;
+    const t = Number(obj.t ?? 0), o = Number(obj.o), h = Number(obj.h), l = Number(obj.l), c = Number(obj.c), v = Number(obj.v ?? 0);
+    if ([o, h, l, c].every(Number.isFinite)) return { t, o, h, l, c, v: Number.isFinite(v) ? v : 0 };
   }
   return null;
 }
 
+function formatPrice(n: number): string {
+  if (n >= 1000) return n.toFixed(0);
+  if (n >= 1) return n.toFixed(2);
+  return n.toFixed(4);
+}
+
 export function KlineChart({ data, width = 600, height = 280, source }: Props) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width * width;
+    const pad = 20;
+    const chartW = width - pad * 2;
+    if (x < pad || x > width - pad) { setHoverIdx(null); return; }
+    const candles = (data ?? []).map(parseCandle).filter((c): c is Candle => c !== null);
+    const barGap = chartW / candles.length;
+    const idx = Math.floor((x - pad) / barGap);
+    setHoverIdx(idx >= 0 && idx < candles.length ? idx : null);
+  }, [data, width]);
+
+  const handleMouseLeave = useCallback(() => setHoverIdx(null), []);
+
   if (!data || data.length === 0) {
-    return <div className="kline-empty">暂无 K 线数据</div>;
+    return <div className="kline-empty">无 K 线数据</div>;
   }
 
   const candles = data.map(parseCandle).filter((c): c is Candle => c !== null);
@@ -60,9 +91,19 @@ export function KlineChart({ data, width = 600, height = 280, source }: Props) {
     grids.push({ y, price: price.toFixed(2) });
   }
 
+  const hoverCandle = hoverIdx !== null ? candles[hoverIdx] : null;
+  const crossX = hoverIdx !== null ? pad + hoverIdx * barGap + barGap / 2 : null;
+  const crossY = hoverCandle ? pad + priceH - ((hoverCandle.c - minP) / rangeP) * priceH : null;
+
   return (
     <div className="kline-chart">
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxHeight: height }}>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        style={{ maxHeight: height }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
+      >
         {grids.map((g, i) => (
           <g key={i}>
             <line
@@ -98,7 +139,26 @@ export function KlineChart({ data, width = 600, height = 280, source }: Props) {
             </g>
           );
         })}
+
+        {crossX !== null && crossY !== null && (
+          <>
+            <line x1={crossX} y1={pad} x2={crossX} y2={pad + priceH} stroke="var(--text-muted)" strokeWidth="0.5" strokeDasharray="2,2" />
+            <line x1={pad} y1={crossY} x2={width - pad} y2={crossY} stroke="var(--text-muted)" strokeWidth="0.5" strokeDasharray="2,2" />
+            <circle cx={crossX} cy={crossY} r="3" fill="var(--accent-blue)" />
+          </>
+        )}
       </svg>
+
+      {hoverCandle && (
+        <div className="kline-tooltip">
+          {hoverCandle.t > 0 && <span>{new Date(hoverCandle.t).toLocaleString()}</span>}
+          <span>O {formatPrice(hoverCandle.o)}</span>
+          <span>H {formatPrice(hoverCandle.h)}</span>
+          <span>L {formatPrice(hoverCandle.l)}</span>
+          <span>C {formatPrice(hoverCandle.c)}</span>
+        </div>
+      )}
+
       <div className="kline-meta">
         <span>{source ?? 'K线'} · 1h × {candles.length} 根 · 7 日</span>
         <span style={{ color: overall }}>{pctChange >= 0 ? '+' : ''}{pctChange.toFixed(2)}%</span>

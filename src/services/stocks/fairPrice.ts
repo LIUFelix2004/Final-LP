@@ -82,17 +82,27 @@ export function bucketFunding8h(
   return buckets;
 }
 
+function alignToUtc8hBucket(ts: number): number {
+  const d = new Date(ts);
+  const h = d.getUTCHours();
+  const bucket = h < 8 ? 0 : h < 16 ? 8 : 16;
+  d.setUTCHours(bucket, 0, 0, 0);
+  return d.getTime();
+}
+
 export function bucketFunding8hMultiExchange(
   allPoints: Record<string, { points: FundingPoint[]; intervalHours: number }>,
   now: number,
 ): FundingBucket[] {
   const BUCKET_MS = 8 * 3600 * 1000;
+  const currentBucketStart = alignToUtc8hBucket(now);
   const buckets: FundingBucket[] = [];
 
   for (let i = 0; i < 6; i++) {
-    const bucketEnd = now - i * BUCKET_MS;
-    const bucketStart = bucketEnd - BUCKET_MS;
-    const label = `T-${(i + 1) * 8}h`;
+    const bucketStart = currentBucketStart - i * BUCKET_MS;
+    const bucketEnd = bucketStart + BUCKET_MS;
+    const startDate = new Date(bucketStart);
+    const label = `${startDate.getUTCMonth() + 1}/${startDate.getUTCDate()} ${String(startDate.getUTCHours()).padStart(2, '0')}:00`;
     const rates: Record<string, number | null> = {};
 
     for (const [exchange, data] of Object.entries(allPoints)) {
@@ -100,7 +110,8 @@ export function bucketFunding8hMultiExchange(
       if (inBucket.length === 0) {
         rates[exchange] = null;
       } else {
-        rates[exchange] = inBucket.reduce((s, p) => s + p.rate, 0);
+        const sum8hEq = inBucket.reduce((s, p) => s + funding8hEquivalent(p.rate, data.intervalHours), 0);
+        rates[exchange] = sum8hEq;
       }
     }
 

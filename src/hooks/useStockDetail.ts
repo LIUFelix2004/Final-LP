@@ -15,7 +15,7 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
   const [fundingBuckets, setFundingBuckets] = useState<FundingBucket[]>([]);
   const [perpErrors, setPerpErrors] = useState<string[]>([]);
   const [perpLoading, setPerpLoading] = useState(false);
-  const [klineData, setKlineData] = useState<number[][] | null>(null);
+  const [klineData, setKlineData] = useState<unknown[] | null>(null);
 
   const generationRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -47,8 +47,12 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     };
   }, [fetchPerps, autoRefresh]);
 
+  const selectedSymbol = selectedRow?.symbol ?? null;
+  const selectedOnchainPrice = selectedRow?.onchainPrice ?? null;
+  const selectedMainPoolLiq = selectedRow?.mainPool?.liquidityUsd ?? null;
+
   useEffect(() => {
-    if (!selectedRow || !perpData) {
+    if (!selectedSymbol || !perpData) {
       setQuotes([]);
       setFairResult(null);
       setPremium(null);
@@ -56,13 +60,13 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
       return;
     }
 
-    const q = getQuotesForStock(selectedRow.symbol, perpData);
+    const q = getQuotesForStock(selectedSymbol, perpData);
     setQuotes(q);
 
     const result = computeFairPrice(q);
-    const prem = computePremium(selectedRow.onchainPrice, result.fair);
+    const prem = computePremium(selectedOnchainPrice, result.fair);
     result.premium = prem;
-    result.onchainPrice = selectedRow.onchainPrice;
+    result.onchainPrice = selectedOnchainPrice;
     setFairResult(result);
     setPremium(prem);
 
@@ -71,16 +75,16 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     const longBest = bestLongExchange(q);
     const sigs = buildSignals(
       prem,
-      selectedRow.onchainPrice,
+      selectedOnchainPrice,
       result.fair,
       result.participatingExchanges.length,
-      selectedRow.mainPool?.liquidityUsd ?? null,
+      selectedMainPoolLiq,
       session,
       shortBest,
       longBest,
     );
     setSignals(sigs);
-  }, [selectedRow, perpData]);
+  }, [selectedSymbol, selectedOnchainPrice, selectedMainPoolLiq, perpData]);
 
   useEffect(() => {
     if (!selectedRow) {

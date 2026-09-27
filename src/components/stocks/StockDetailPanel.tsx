@@ -15,7 +15,7 @@ interface Props {
   fundingBuckets: FundingBucket[];
   perpErrors: string[];
   perpLoading: boolean;
-  klineData: number[][] | null;
+  klineData: unknown[] | null;
 }
 
 function premiumBadge(premium: number | null): { text: string; cls: string } | null {
@@ -82,12 +82,10 @@ export function StockDetailPanel({
         </div>
       </div>
 
-      {klineData && (
-        <div className="stock-detail-section">
-          <h3>公允价 K 线</h3>
-          <KlineChart data={klineData} source={`Binance ${row.symbol}USDT`} />
-        </div>
-      )}
+      <div className="stock-detail-section">
+        <h3>公允价 K 线</h3>
+        <KlineChart data={klineData} source={`Binance ${row.symbol}USDT`} />
+      </div>
 
       <div className="stock-detail-section">
         <h3>Fair Price 明细</h3>

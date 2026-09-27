@@ -71,8 +71,22 @@ export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSele
             </span>
             {ALL_WINDOWS.map(w => {
               const val = getFeeValue(row, w);
+              const isSampled = w === 'm30' || w === 'h48' || w === 'h72' || w === 'd7';
+              let tooltip = '';
+              if (isSampled && val === null) {
+                tooltip = '需要浏览器持续打开采样';
+              } else if (w === 'm30' && val !== null) {
+                tooltip = `采样 k/6（k = 30分钟内采样点数）`;
+              }
+              if (row.feeUnknownCount > 0 && !isSampled) {
+                tooltip = `${row.feeUnknownCount} 个池费率未知` + (tooltip ? `；${tooltip}` : '');
+              }
               return (
-                <span key={w} className={`col-fee-cell ${val !== null && val > 0 ? 'positive' : ''} ${w === sortWindow ? 'active-col' : ''}`}>
+                <span
+                  key={w}
+                  className={`col-fee-cell ${val !== null && val > 0 ? 'positive' : ''} ${w === sortWindow ? 'active-col' : ''}`}
+                  title={tooltip || undefined}
+                >
                   {formatFeeUsd(val)}
                 </span>
               );

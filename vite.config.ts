@@ -109,10 +109,10 @@ const CEX_ROUTES: Record<string, { primary: string; fallback?: string }> = {
 }
 
 const CEX_PATH_WHITELIST: Record<string, RegExp> = {
-  binance: /^\/fapi\/v1\/(exchangeInfo|premiumIndex|ticker\/24hr|fundingInfo|fundingRate|klines)/,
-  okx: /^\/api\/v5\/(public|market)\//,
-  gate: /^\/api\/v4\/futures\/usdt\/(contracts|tickers|funding_rate)/,
-  bybit: /^\/v5\/market\//,
+  binance: /^\/fapi\/v1\/(exchangeInfo|premiumIndex|ticker\/24hr|fundingInfo|fundingRate|klines)(\?|$)/,
+  okx: /^\/api\/v5\/(public|market)\/[a-zA-Z-]+(\?|$)/,
+  gate: /^\/api\/v4\/futures\/usdt\/(contracts|tickers|funding_rate)(\?|$)/,
+  bybit: /^\/v5\/market\/[a-zA-Z-]+(\?|$)/,
 }
 
 const responseCache = new Map<string, { data: string; contentType: string; time: number }>()
@@ -125,13 +125,19 @@ function cexProxyPlugin(proxyUrl: string): Plugin {
     configureServer(server) {
       const hlCache = new Map<string, { data: string; time: number }>()
       const HL_CACHE_MS = 4_000
+      const HL_LONG_CACHE_MS = 60_000
+      const HL_LONG_CACHE_TYPES = ['fundingHistory', 'candleSnapshot']
 
       server.middlewares.use('/api/cex/hl', async (req, res, _next) => {
         if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
         try {
           const body = await readBody(req)
+          let parsedType = ''
+          try { parsedType = JSON.parse(body)?.type ?? '' } catch {}
+          const isLongCache = HL_LONG_CACHE_TYPES.includes(parsedType)
+          const ttl = isLongCache ? HL_LONG_CACHE_MS : HL_CACHE_MS
           const cached = hlCache.get(body)
-          if (cached && Date.now() - cached.time < HL_CACHE_MS) {
+          if (cached && Date.now() - cached.time < ttl) {
             res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' })
             res.end(cached.data)
             return
@@ -156,7 +162,20 @@ function cexProxyPlugin(proxyUrl: string): Plugin {
             return r.text()
           }
 
-          const text = await doFetch()
+          let text: string | null = null
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              text = await doFetch()
+              break
+            } catch (err) {
+              if (attempt < 2 && String(err).includes('429')) {
+                await new Promise(r => setTimeout(r, (attempt + 1) * 1000))
+                continue
+              }
+              throw err
+            }
+          }
+          if (text === null) throw new Error('429 Too Many Requests')
           hlCache.set(body, { data: text, time: Date.now() })
           res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' })
           res.end(text)
@@ -225,13 +244,15 @@ function cexProxyPlugin(proxyUrl: string): Plugin {
 
           if (upstream_resp.ok) {
             responseCache.set(cacheKey, { data: text, contentType, time: Date.now() })
+            res.writeHead(upstream_resp.status, {
+              'content-type': contentType,
+              'access-control-allow-origin': '*',
+            })
+            res.end(text)
+          } else {
+            res.writeHead(502, { 'content-type': 'application/json', 'access-control-allow-origin': '*' })
+            res.end(JSON.stringify({ error: 'upstream_error', exchange, status: upstream_resp.status, message: `${exchange} 返回 ${upstream_resp.status}` }))
           }
-
-          res.writeHead(upstream_resp.status, {
-            'content-type': contentType,
-            'access-control-allow-origin': '*',
-          })
-          res.end(text)
         } catch (err) {
           console.error(`[cex-proxy] ${exchange} ${path}:`, err)
           if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' })

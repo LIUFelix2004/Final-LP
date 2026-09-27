@@ -76,6 +76,15 @@ export function StocksBoard({ onBack }: Props) {
         errors={errors}
         rowCount={rows.length}
       />
+      {rows.length > 0 && (() => {
+        const totalUnknown = rows.reduce((s, r) => s + r.feeUnknownCount, 0);
+        if (totalUnknown === 0) return null;
+        return (
+          <div className="stocks-rpc-warn">
+            {totalUnknown} 个池费率读取失败（RPC 超时或合约不支持）
+          </div>
+        );
+      })()}
       <div className="stocks-panels">
         <div className="stocks-left">
           <div className="stocks-left-actions">
@@ -115,20 +124,19 @@ export function StocksBoard({ onBack }: Props) {
 }
 
 function StocksFooter() {
-  const stats = getSamplerStats();
-  const totalSamples = stats.fastCount + stats.slowCount;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
-  const nextSample = (): string => {
-    const now = Date.now();
-    const nextFast = stats.lastFastTime + 5 * 60 * 1000;
-    const target = Math.max(nextFast, now);
-    const d = new Date(target);
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  };
+  const stats = getSamplerStats();
+  const nextTime = new Date(Math.max(stats.nextSlowTime, now));
+  const nextStr = `${String(nextTime.getHours()).padStart(2, '0')}:${String(nextTime.getMinutes()).padStart(2, '0')}`;
 
   return (
     <div className="stocks-footer">
-      下次采样 {nextSample()} · 已采 {totalSamples} 次
+      下次采样 {nextStr} · 已采 {stats.slowMaxCount} 条/只
     </div>
   );
 }

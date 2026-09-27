@@ -19,10 +19,17 @@ import './App.css';
 
 interface AppProps {
   onSelectStocks?: () => void;
+  initialChainId?: number;
+  onChainChange?: (chainId: number) => void;
 }
 
-function App({ onSelectStocks }: AppProps = {}) {
-  const [chainId, setChainId] = useState(DEFAULT_CHAIN_ID);
+function App({ onSelectStocks, initialChainId, onChainChange }: AppProps = {}) {
+  const [chainId, setChainId] = useState(initialChainId ?? DEFAULT_CHAIN_ID);
+
+  const handleChainSwitch = useCallback((id: number) => {
+    setChainId(id);
+    onChainChange?.(id);
+  }, [onChainChange]);
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('major');
   const [gmgnSettings, setGmgnSettings] = useState<GmgnSettings>(loadGmgnSettings);
 
@@ -102,7 +109,7 @@ function App({ onSelectStocks }: AppProps = {}) {
         onMinTvlChange={setMinTvl}
       />
       <div className="controls-row">
-        <ChainSwitcher activeChainId={chainId} onSwitch={setChainId} onSelectStocks={onSelectStocks} />
+        <ChainSwitcher activeChainId={chainId} onSwitch={handleChainSwitch} onSelectStocks={onSelectStocks} />
         <DiscoveryToggle
           mode={discoveryMode}
           onChange={handleDiscoveryChange}

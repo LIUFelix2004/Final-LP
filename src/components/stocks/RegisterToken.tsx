@@ -27,14 +27,21 @@ export function RegisterToken({ onRegistered }: Props) {
     try {
       const isOfficial = await verifyOfficialToken(addr);
 
-      if (!isOfficial) {
-        setStatus('warn');
-        setMessage('非官方 Robinhood 股票代币，拒绝添加');
-        return;
-      }
-
       setMessage('读取链上 symbol/name...');
       const { symbol, name } = await readTokenSymbolName(addr);
+
+      if (!isOfficial) {
+        const token: StockToken = {
+          address: addr.toLowerCase(),
+          symbol,
+          name: name.replace(/\s*•\s*Robinhood Token$/, ''),
+          official: false,
+        };
+        setPendingToken(token);
+        setStatus('warn');
+        setMessage(`${symbol} 非官方 Robinhood 股票代币`);
+        return;
+      }
 
       const token: StockToken = {
         address: addr.toLowerCase(),

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { StockToken, StockPool, StockFeeRow, StockSortWindow } from '../types/stocks';
 import { SEED_STOCKS, HOT_MIN_VOLUME_24H, REFRESH_INTERVAL_MS } from '../config/stocks';
 import {
@@ -207,15 +207,17 @@ export function useStocksBoard() {
     setUserAddedSymbols(prev => new Set(prev).add(symbol.toUpperCase()));
   }, []);
 
+  const [samplerVersion, setSamplerVersion] = useState(0);
+
   useEffect(() => {
     if (feeRows.length > 0) {
       recordSample(feeRows);
+      setSamplerVersion(v => v + 1);
     }
   }, [feeRows]);
 
-  const enrichedRows = feeRows.length > 0 ? enrichRowsWithSampled(feeRows) : feeRows;
-
-  const sortedRows = [...enrichedRows].sort((a, b) => {
+  const sortedRows = useMemo(() => {
+    const enriched = feeRows.length > 0 ? enrichRowsWithSampled(feeRows) : feeRows;
     const getVal = (row: StockFeeRow): number | null => {
       switch (sortWindow) {
         case 'm5': return row.fee.m5;
@@ -228,8 +230,8 @@ export function useStocksBoard() {
         default: return row.fee.h24;
       }
     };
-    return (getVal(b) ?? -1) - (getVal(a) ?? -1);
-  });
+    return [...enriched].sort((a, b) => (getVal(b) ?? -1) - (getVal(a) ?? -1));
+  }, [feeRows, sortWindow, samplerVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     rows: sortedRows,
