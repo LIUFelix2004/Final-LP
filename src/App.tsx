@@ -17,7 +17,11 @@ import type { GmgnSettings } from './services/gmgn';
 import { DEFAULT_CHAIN_ID } from './config/chains';
 import './App.css';
 
-function App() {
+interface AppProps {
+  onSelectStocks?: () => void;
+}
+
+function App({ onSelectStocks }: AppProps = {}) {
   const [chainId, setChainId] = useState(DEFAULT_CHAIN_ID);
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('major');
   const [gmgnSettings, setGmgnSettings] = useState<GmgnSettings>(loadGmgnSettings);
@@ -98,7 +102,7 @@ function App() {
         onMinTvlChange={setMinTvl}
       />
       <div className="controls-row">
-        <ChainSwitcher activeChainId={chainId} onSwitch={setChainId} />
+        <ChainSwitcher activeChainId={chainId} onSwitch={setChainId} onSelectStocks={onSelectStocks} />
         <DiscoveryToggle
           mode={discoveryMode}
           onChange={handleDiscoveryChange}

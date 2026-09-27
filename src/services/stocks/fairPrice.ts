@@ -1,0 +1,222 @@
+import type { PerpQuote, FairPriceResult, FundingPoint, FundingBucket, StockSignal, MarketSession } from '../../types/stocks';
+import { PREMIUM_THRESHOLD, MIN_PERP_VOLUME_USD, MIN_POOL_LIQUIDITY_WARN, EXCHANGE_META } from '../../config/stocks';
+
+export function median(values: number[]): number | null {
+  const finite = values.filter(Number.isFinite);
+  if (finite.length === 0) return null;
+  finite.sort((a, b) => a - b);
+  const mid = Math.floor(finite.length / 2);
+  if (finite.length % 2 === 1) return finite[mid];
+  return (finite[mid - 1] + finite[mid]) / 2;
+}
+
+export function computeFairPrice(
+  quotes: PerpQuote[],
+  minVolume: number = MIN_PERP_VOLUME_USD,
+): FairPriceResult & { participatingQuotes: PerpQuote[] } {
+  const participating: PerpQuote[] = [];
+  const excluded: Array<{ exchange: string; reason: string }> = [];
+
+  for (const q of quotes) {
+    if (q.markPrice === null || !Number.isFinite(q.markPrice) || q.markPrice <= 0) {
+      excluded.push({ exchange: q.exchange, reason: '标记价不可用' });
+      continue;
+    }
+    if (q.volume24h !== null && q.volume24h < minVolume) {
+      excluded.push({ exchange: q.exchange, reason: `24h 成交额 $${Math.round(q.volume24h)} < $${minVolume}` });
+      continue;
+    }
+    participating.push(q);
+  }
+
+  const marks = participating.map(q => q.markPrice!);
+  const fair = median(marks);
+
+  return {
+    fair,
+    premium: null,
+    onchainPrice: null,
+    participatingExchanges: participating.map(q => q.exchange),
+    excludedExchanges: excluded,
+    participatingQuotes: participating,
+  };
+}
+
+export function computePremium(onchainPrice: number | null, fair: number | null): number | null {
+  if (onchainPrice === null || fair === null || !Number.isFinite(onchainPrice) || !Number.isFinite(fair) || fair === 0) {
+    return null;
+  }
+  return onchainPrice / fair - 1;
+}
+
+export function annualizeFunding(rate: number, intervalHours: number): number {
+  return rate * (24 / intervalHours) * 365;
+}
+
+export function funding8hEquivalent(rate: number, intervalHours: number): number {
+  return rate * (8 / intervalHours);
+}
+
+export function bucketFunding8h(
+  points: FundingPoint[],
+  now: number,
+  intervalHours: number,
+): FundingBucket[] {
+  const BUCKET_MS = 8 * 3600 * 1000;
+  const buckets: FundingBucket[] = [];
+
+  for (let i = 0; i < 6; i++) {
+    const bucketEnd = now - i * BUCKET_MS;
+    const bucketStart = bucketEnd - BUCKET_MS;
+    const label = `T-${(i + 1) * 8}h`;
+
+    const inBucket = points.filter(p => p.time >= bucketStart && p.time < bucketEnd);
+    if (inBucket.length === 0) {
+      buckets.push({ label, startTime: bucketStart, rates: {} });
+    } else {
+      const sum = inBucket.reduce((s, p) => s + p.rate, 0);
+      buckets.push({ label, startTime: bucketStart, rates: { sum: sum } });
+    }
+  }
+
+  return buckets;
+}
+
+export function bucketFunding8hMultiExchange(
+  allPoints: Record<string, { points: FundingPoint[]; intervalHours: number }>,
+  now: number,
+): FundingBucket[] {
+  const BUCKET_MS = 8 * 3600 * 1000;
+  const buckets: FundingBucket[] = [];
+
+  for (let i = 0; i < 6; i++) {
+    const bucketEnd = now - i * BUCKET_MS;
+    const bucketStart = bucketEnd - BUCKET_MS;
+    const label = `T-${(i + 1) * 8}h`;
+    const rates: Record<string, number | null> = {};
+
+    for (const [exchange, data] of Object.entries(allPoints)) {
+      const inBucket = data.points.filter(p => p.time >= bucketStart && p.time < bucketEnd);
+      if (inBucket.length === 0) {
+        rates[exchange] = null;
+      } else {
+        rates[exchange] = inBucket.reduce((s, p) => s + p.rate, 0);
+      }
+    }
+
+    buckets.push({ label, startTime: bucketStart, rates });
+  }
+
+  return buckets;
+}
+
+export function bestShortExchange(quotes: PerpQuote[]): PerpQuote | null {
+  const valid = quotes.filter(q =>
+    q.fundingRate !== null && Number.isFinite(q.fundingRate) &&
+    q.volume24h !== null && q.volume24h >= MIN_PERP_VOLUME_USD
+  );
+  if (valid.length === 0) return null;
+  valid.sort((a, b) => {
+    const aAnn = annualizeFunding(a.fundingRate!, a.fundingIntervalHours);
+    const bAnn = annualizeFunding(b.fundingRate!, b.fundingIntervalHours);
+    if (bAnn !== aAnn) return bAnn - aAnn;
+    return (b.volume24h ?? 0) - (a.volume24h ?? 0);
+  });
+  return valid[0];
+}
+
+export function bestLongExchange(quotes: PerpQuote[]): PerpQuote | null {
+  const valid = quotes.filter(q =>
+    q.fundingRate !== null && Number.isFinite(q.fundingRate) &&
+    q.volume24h !== null && q.volume24h >= MIN_PERP_VOLUME_USD
+  );
+  if (valid.length === 0) return null;
+  valid.sort((a, b) => {
+    const aAnn = annualizeFunding(a.fundingRate!, a.fundingIntervalHours);
+    const bAnn = annualizeFunding(b.fundingRate!, b.fundingIntervalHours);
+    if (aAnn !== bAnn) return aAnn - bAnn;
+    return (b.volume24h ?? 0) - (a.volume24h ?? 0);
+  });
+  return valid[0];
+}
+
+export function buildSignals(
+  premium: number | null,
+  onchainPrice: number | null,
+  fair: number | null,
+  participatingCount: number,
+  mainPoolLiquidity: number | null,
+  session: MarketSession,
+  shortBest: PerpQuote | null,
+  longBest: PerpQuote | null,
+): StockSignal[] {
+  const signals: StockSignal[] = [];
+
+  if (premium !== null && Number.isFinite(premium)) {
+    const pctStr = `${premium >= 0 ? '+' : ''}${(premium * 100).toFixed(2)}%`;
+    if (Math.abs(premium) <= PREMIUM_THRESHOLD) {
+      signals.push({
+        text: `链上价较 ${participatingCount} 所公允价 ${pctStr}，在 ±0.5% 内，链上买卖都不吃亏`,
+        color: 'green',
+      });
+    } else if (premium > PREMIUM_THRESHOLD) {
+      signals.push({
+        text: `链上溢价 ${pctStr}：链上买入不划算（链上卖出 / CEX 买入更优）`,
+        color: 'red',
+      });
+    } else {
+      signals.push({
+        text: `链上折价 ${pctStr}：链上买入划算`,
+        color: 'blue',
+      });
+    }
+  }
+
+  if (shortBest) {
+    const ann = annualizeFunding(shortBest.fundingRate!, shortBest.fundingIntervalHours);
+    const meta = EXCHANGE_META[shortBest.exchange] ?? { name: shortBest.exchange };
+    const vol = shortBest.volume24h !== null ? `$${(shortBest.volume24h / 1e6).toFixed(2)}M` : '—';
+    signals.push({
+      text: `开空成本最低：${meta.name} ${shortBest.contract} ${(shortBest.fundingRate! * 100).toFixed(4)}%（年化 ${(ann * 100).toFixed(1)}%），24h 成交 ${vol}`,
+      color: 'green',
+    });
+  }
+
+  if (longBest) {
+    const ann = annualizeFunding(longBest.fundingRate!, longBest.fundingIntervalHours);
+    const meta = EXCHANGE_META[longBest.exchange] ?? { name: longBest.exchange };
+    const vol = longBest.volume24h !== null ? `$${(longBest.volume24h / 1e6).toFixed(2)}M` : '—';
+    signals.push({
+      text: `开多成本最低：${meta.name} ${longBest.contract} ${(longBest.fundingRate! * 100).toFixed(4)}%（年化 ${(ann * 100).toFixed(1)}%），24h 成交 ${vol}`,
+      color: 'green',
+    });
+  }
+
+  if (session.state !== 'regular') {
+    signals.push({
+      text: `美股${session.label}：永续价格由各所内部指数/周末定价驱动，溢价参考性下降`,
+      color: 'orange',
+    });
+  }
+
+  if (participatingCount === 0) {
+    signals.push({
+      text: '无永续合约，无法计算公允价',
+      color: 'gray',
+    });
+  } else if (participatingCount === 1) {
+    signals.push({
+      text: '公允价样本不足（仅 1 所）',
+      color: 'orange',
+    });
+  }
+
+  if (mainPoolLiquidity !== null && mainPoolLiquidity < MIN_POOL_LIQUIDITY_WARN) {
+    signals.push({
+      text: `链上主池流动性不足 $${(MIN_POOL_LIQUIDITY_WARN / 1000).toFixed(0)}k，价格可能失真`,
+      color: 'orange',
+    });
+  }
+
+  return signals;
+}

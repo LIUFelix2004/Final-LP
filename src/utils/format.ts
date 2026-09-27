@@ -60,3 +60,14 @@ export function estimateFeeUsdFromRate(volume: number | null, feeRatePercent: nu
   if (feeRatePercent === null || !volume) return null;
   return volume * (feeRatePercent / 100);
 }
+
+export function formatSignedPercent(value: number | null, decimals = 2): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${(value * 100).toFixed(decimals)}%`;
+}
+
+export function formatStockPrice(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  return `$${value.toFixed(2)}`;
+}

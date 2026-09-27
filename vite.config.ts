@@ -1,5 +1,57 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+
+async function proxyFetch(
+  upstream: string,
+  proxyUrl: string,
+  headers: Record<string, string>,
+  res: ServerResponse,
+  method: string = 'GET',
+  body?: string,
+): Promise<void> {
+  const proxyEnv = proxyUrl || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy
+  let fetchFn: typeof globalThis.fetch = globalThis.fetch
+  let fetchInit: RequestInit & { dispatcher?: unknown } = { method, headers, signal: AbortSignal.timeout(10_000) }
+  if (body) fetchInit.body = body
+
+  if (proxyEnv) {
+    const undici = await import('undici')
+    const dispatcher = new undici.ProxyAgent(proxyEnv)
+    fetchFn = undici.fetch as unknown as typeof globalThis.fetch
+    fetchInit = { ...fetchInit, dispatcher } as unknown as RequestInit
+  }
+
+  const upstream_resp = await fetchFn(upstream, fetchInit)
+
+  res.writeHead(upstream_resp.status, {
+    'content-type': upstream_resp.headers.get('content-type') || 'application/json',
+    'access-control-allow-origin': '*',
+  })
+
+  if (upstream_resp.body) {
+    const reader = upstream_resp.body.getReader()
+    const pump = async (): Promise<void> => {
+      const { done, value } = await reader.read()
+      if (done) { res.end(); return }
+      res.write(value)
+      return pump()
+    }
+    await pump()
+  } else {
+    const text = await upstream_resp.text()
+    res.end(text)
+  }
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => resolve(Buffer.concat(chunks).toString()))
+    req.on('error', reject)
+  })
+}
 
 function gmgnProxyPlugin(apiKey: string, proxyUrl: string): Plugin {
   return {
@@ -36,41 +88,115 @@ function gmgnProxyPlugin(apiKey: string, proxyUrl: string): Plugin {
         const upstream = `${target}${rewrittenPath}`
 
         try {
+          await proxyFetch(upstream, proxyUrl, headers, res)
+        } catch (err) {
+          console.error(`[gmgn-proxy] ${upstream}:`, err)
+          if (!res.headersSent) {
+            res.writeHead(502, { 'content-type': 'application/json' })
+          }
+          res.end(JSON.stringify({ error: 'proxy_error', message: String(err) }))
+        }
+      })
+    },
+  }
+}
+
+const CEX_ROUTES: Record<string, { primary: string; fallback?: string }> = {
+  binance: { primary: 'https://fapi.binance.com', fallback: 'https://www.binance.com' },
+  okx: { primary: 'https://www.okx.com' },
+  gate: { primary: 'https://api.gateio.ws' },
+  bybit: { primary: 'https://api.bybit.com', fallback: 'https://api.bytick.com' },
+}
+
+const CEX_PATH_WHITELIST: Record<string, RegExp> = {
+  binance: /^\/fapi\/v1\/(exchangeInfo|premiumIndex|ticker\/24hr|fundingInfo|fundingRate|klines)/,
+  okx: /^\/api\/v5\/(public|market)\//,
+  gate: /^\/api\/v4\/futures\/usdt\/(contracts|tickers|funding_rate)/,
+  bybit: /^\/v5\/market\//,
+}
+
+const responseCache = new Map<string, { data: string; contentType: string; time: number }>()
+const CACHE_SHORT_MS = 4_000
+const CACHE_LONG_PATTERNS = [/exchangeInfo/, /contracts$/, /instruments-info/]
+
+function cexProxyPlugin(proxyUrl: string): Plugin {
+  return {
+    name: 'cex-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/cex/hl', async (req, res, next) => {
+        if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
+        try {
+          const body = await readBody(req)
+          await proxyFetch('https://api.hyperliquid.xyz/info', proxyUrl, { 'Content-Type': 'application/json' }, res, 'POST', body)
+        } catch (err) {
+          console.error('[cex-proxy] hyperliquid:', err)
+          if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'proxy_error', exchange: 'hyperliquid', message: String(err) }))
+        }
+      })
+
+      server.middlewares.use(async (req, res, next) => {
+        if (req.method !== 'GET') return next()
+        const url = req.url ?? ''
+        const match = url.match(/^\/api\/cex\/(\w+)(\/.+)$/)
+        if (!match) return next()
+
+        const [, exchange, path] = match
+        const route = CEX_ROUTES[exchange]
+        if (!route) return next()
+
+        const whitelist = CEX_PATH_WHITELIST[exchange]
+        if (whitelist && !whitelist.test(path)) {
+          res.writeHead(403, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'path_not_allowed' }))
+          return
+        }
+
+        const cacheKey = `${exchange}:${path}`
+        const cached = responseCache.get(cacheKey)
+        const isLongCache = CACHE_LONG_PATTERNS.some(p => p.test(path))
+        const cacheTtl = isLongCache ? 3600_000 : CACHE_SHORT_MS
+        if (cached && Date.now() - cached.time < cacheTtl) {
+          res.writeHead(200, { 'content-type': cached.contentType, 'access-control-allow-origin': '*' })
+          res.end(cached.data)
+          return
+        }
+
+        const tryUpstream = async (base: string): Promise<Response> => {
           const proxyEnv = proxyUrl || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy
           let fetchFn: typeof globalThis.fetch = globalThis.fetch
-          let fetchInit: RequestInit & { dispatcher?: unknown } = { headers }
-
+          let fetchInit: RequestInit & { dispatcher?: unknown } = { signal: AbortSignal.timeout(10_000) }
           if (proxyEnv) {
             const undici = await import('undici')
             const dispatcher = new undici.ProxyAgent(proxyEnv)
             fetchFn = undici.fetch as unknown as typeof globalThis.fetch
-            fetchInit = { headers, dispatcher } as unknown as RequestInit
+            fetchInit = { ...fetchInit, dispatcher } as unknown as RequestInit
+          }
+          return fetchFn(`${base}${path}`, fetchInit)
+        }
+
+        try {
+          let upstream_resp = await tryUpstream(route.primary)
+          if ((upstream_resp.status === 451 || upstream_resp.status === 403) && route.fallback) {
+            upstream_resp = await tryUpstream(route.fallback)
           }
 
-          const upstream_resp = await fetchFn(upstream, fetchInit)
+          const text = await upstream_resp.text()
+          const contentType = upstream_resp.headers.get('content-type') || 'application/json'
+
+          if (upstream_resp.ok) {
+            responseCache.set(cacheKey, { data: text, contentType, time: Date.now() })
+          }
 
           res.writeHead(upstream_resp.status, {
-            'content-type': upstream_resp.headers.get('content-type') || 'application/json',
+            'content-type': contentType,
             'access-control-allow-origin': '*',
           })
-
-          if (upstream_resp.body) {
-            const reader = upstream_resp.body.getReader()
-            const pump = async (): Promise<void> => {
-              const { done, value } = await reader.read()
-              if (done) { res.end(); return }
-              res.write(value)
-              return pump()
-            }
-            await pump()
-          } else {
-            const text = await upstream_resp.text()
-            res.end(text)
-          }
+          res.end(text)
         } catch (err) {
-          console.error(`[gmgn-proxy] ${upstream}:`, err)
-          res.writeHead(502, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ error: 'proxy_error', message: String(err) }))
+          console.error(`[cex-proxy] ${exchange} ${path}:`, err)
+          if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'proxy_error', exchange, message: String(err) }))
         }
       })
     },
@@ -87,7 +213,7 @@ export default defineConfig(({ mode }) => {
     ''
 
   return {
-    plugins: [react(), gmgnProxyPlugin(apiKey, proxyUrl)],
+    plugins: [react(), gmgnProxyPlugin(apiKey, proxyUrl), cexProxyPlugin(proxyUrl)],
     define: {
       'import.meta.env.VITE_GMGN_CONFIGURED': JSON.stringify(apiKey ? 'true' : 'false'),
     },
