@@ -106,8 +106,8 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
   }, [selectedRow?.symbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    setKlineData(null);
     if (!selectedRow) {
-      setKlineData(null);
       return;
     }
     const symbol = selectedRow.symbol;

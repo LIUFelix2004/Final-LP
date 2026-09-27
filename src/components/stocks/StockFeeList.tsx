@@ -1,5 +1,5 @@
 import type { StockFeeRow, StockSortWindow } from '../../types/stocks';
-import { formatSignedPercent } from '../../utils/format';
+import { STOCK_SORT_LABELS } from '../../config/stocks';
 
 interface Props {
   rows: StockFeeRow[];
@@ -22,6 +22,15 @@ function getFeeValue(row: StockFeeRow, window: StockSortWindow): number | null {
   }
 }
 
+const ALL_WINDOWS: StockSortWindow[] = ['m5', 'm30', 'h1', 'h24', 'h48', 'h72', 'd7'];
+
+function formatFeeUsd(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return '—';
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+  return `$${value.toFixed(0)}`;
+}
+
 export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSelect }: Props) {
   if (loading && rows.length === 0) {
     return (
@@ -40,14 +49,14 @@ export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSele
     <div className="stocks-fee-list">
       <div className="stocks-list-header">
         <span className="col-rank">#</span>
-        <span className="col-symbol">股票</span>
-        <span className="col-price">链上价</span>
-        <span className="col-fee">手续费</span>
-        <span className="col-vol">24H量</span>
-        <span className="col-liq">流动性</span>
+        <span className="col-symbol">代码</span>
+        {ALL_WINDOWS.map(w => (
+          <span key={w} className={`col-fee-cell ${w === sortWindow ? 'active-col' : ''}`}>
+            {STOCK_SORT_LABELS[w]}
+          </span>
+        ))}
       </div>
       {rows.map((row, i) => {
-        const feeVal = getFeeValue(row, sortWindow);
         const isSelected = row.symbol === selectedSymbol;
         return (
           <div
@@ -60,18 +69,14 @@ export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSele
               <span className="stock-sym">{row.symbol}</span>
               <span className="stock-name">{row.name}</span>
             </span>
-            <span className="col-price">
-              {row.onchainPrice !== null ? `$${row.onchainPrice.toFixed(2)}` : '—'}
-            </span>
-            <span className={`col-fee ${feeVal !== null && feeVal > 0 ? 'positive' : ''}`}>
-              {feeVal !== null ? formatSignedPercent(feeVal) : '—'}
-            </span>
-            <span className="col-vol">
-              {row.mainPool?.volume.h24 != null ? `$${(row.mainPool.volume.h24 / 1000).toFixed(0)}K` : '—'}
-            </span>
-            <span className="col-liq">
-              {row.mainPool?.liquidityUsd != null ? `$${(row.mainPool.liquidityUsd / 1000).toFixed(0)}K` : '—'}
-            </span>
+            {ALL_WINDOWS.map(w => {
+              const val = getFeeValue(row, w);
+              return (
+                <span key={w} className={`col-fee-cell ${val !== null && val > 0 ? 'positive' : ''} ${w === sortWindow ? 'active-col' : ''}`}>
+                  {formatFeeUsd(val)}
+                </span>
+              );
+            })}
           </div>
         );
       })}

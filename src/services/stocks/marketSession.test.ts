@@ -2,18 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { getUsMarketSession } from './marketSession';
 
 describe('getUsMarketSession', () => {
-  function etDate(dateStr: string, hour: number, minute: number): Date {
-    const d = new Date(`${dateStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`);
-    const etOffset = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      timeZoneName: 'shortOffset',
-    }).formatToParts(d).find(p => p.type === 'timeZoneName')?.value ?? '';
-    const match = etOffset.match(/GMT([+-]\d+)/);
-    const offsetHours = match ? Number(match[1]) : -5;
-    const utcMs = d.getTime() - offsetHours * 3600_000;
-    return new Date(utcMs);
-  }
-
   it('returns closed on Saturday', () => {
     const sat = new Date('2026-09-26T16:00:00Z');
     const result = getUsMarketSession(sat);

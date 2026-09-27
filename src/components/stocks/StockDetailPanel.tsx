@@ -18,6 +18,14 @@ interface Props {
   klineData: number[][] | null;
 }
 
+function premiumBadge(premium: number | null): { text: string; cls: string } | null {
+  if (premium === null || !Number.isFinite(premium)) return null;
+  const pct = formatSignedPercent(premium);
+  if (Math.abs(premium) <= 0.005) return { text: `链上溢价 ${pct} · 在 ±0.5% 内`, cls: 'badge-ok' };
+  if (premium > 0) return { text: `链上溢价 ${pct} · 链上买入不划算`, cls: 'badge-warn' };
+  return { text: `链上折价 ${pct} · 链上买入划算`, cls: 'badge-good' };
+}
+
 export function StockDetailPanel({
   row,
   quotes,
@@ -30,22 +38,27 @@ export function StockDetailPanel({
   klineData,
 }: Props) {
   const session = getUsMarketSession();
+  const badge = premiumBadge(premium);
 
   return (
     <div className="stock-detail">
       <div className="stock-detail-header">
-        <h2>{row.symbol} <span className="stock-detail-name">{row.name}</span></h2>
+        <h2>
+          {row.symbol} <span className="stock-detail-name">{row.name}</span>
+          <span className="stock-detail-tag">股票代币</span>
+        </h2>
         <div className="stock-detail-meta">
           <span className="market-session" data-state={session.state}>
             {session.label}
           </span>
-          {session.reason && <span className="market-reason">{session.reason}</span>}
+          <span className="market-et-time">ET {session.etTime}</span>
+          {badge && <span className={`premium-badge ${badge.cls}`}>{badge.text}</span>}
         </div>
       </div>
 
       <div className="stock-detail-prices">
         <div className="price-card">
-          <span className="price-label">链上价格</span>
+          <span className="price-label">链上主池价</span>
           <span className="price-value">{formatStockPrice(row.onchainPrice)}</span>
           {row.mainPool && (
             <span className="price-sub">
@@ -55,24 +68,24 @@ export function StockDetailPanel({
           )}
         </div>
         <div className="price-card">
-          <span className="price-label">Fair Price</span>
+          <span className="price-label">公允价（{fairResult?.participatingExchanges.length ?? 0} 所中位）</span>
           <span className="price-value">{formatStockPrice(fairResult?.fair ?? null)}</span>
-          {fairResult && (
+          {fairResult && fairResult.excludedExchanges.length > 0 && (
             <span className="price-sub">
-              {fairResult.participatingExchanges.length} 交易所
+              排除 {fairResult.excludedExchanges.length} 所
             </span>
           )}
         </div>
         <div className={`price-card premium ${premium !== null && Math.abs(premium) > 0.005 ? 'warn' : ''}`}>
-          <span className="price-label">溢价</span>
+          <span className="price-label">链上溢价</span>
           <span className="price-value">{formatSignedPercent(premium)}</span>
         </div>
       </div>
 
       {klineData && (
         <div className="stock-detail-section">
-          <h3>K 线 (1H × 168)</h3>
-          <KlineChart data={klineData} />
+          <h3>公允价 K 线</h3>
+          <KlineChart data={klineData} source={`Binance ${row.symbol}USDT`} />
         </div>
       )}
 
@@ -85,12 +98,13 @@ export function StockDetailPanel({
             quotes={quotes}
             onchainPrice={row.onchainPrice}
             mainPool={row.mainPool}
+            fairResult={fairResult}
           />
         )}
       </div>
 
       <div className="stock-detail-section">
-        <h3>Funding Rate (8H 等价)</h3>
+        <h3>Funding Rate</h3>
         <FundingTable
           quotes={quotes}
           buckets={fundingBuckets}

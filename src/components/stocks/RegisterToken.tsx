@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { verifyOfficialToken, saveUserToken } from '../../services/stocks/registry';
+import { verifyOfficialToken, saveUserToken, readTokenSymbolName } from '../../services/stocks/registry';
 import type { StockToken } from '../../types/stocks';
 
 interface Props {
@@ -9,8 +9,9 @@ interface Props {
 export function RegisterToken({ onRegistered }: Props) {
   const [open, setOpen] = useState(false);
   const [address, setAddress] = useState('');
-  const [status, setStatus] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
+  const [status, setStatus] = useState<'idle' | 'checking' | 'ok' | 'error' | 'warn'>('idle');
   const [message, setMessage] = useState('');
+  const [pendingToken, setPendingToken] = useState<StockToken | null>(null);
 
   const handleSubmit = useCallback(async () => {
     const addr = address.trim();
@@ -26,42 +27,45 @@ export function RegisterToken({ onRegistered }: Props) {
     try {
       const isOfficial = await verifyOfficialToken(addr);
 
-      const resp = await fetch(`https://api.dexscreener.com/token-pairs/v1/robinhood/${addr}`);
-      if (!resp.ok) throw new Error('DexScreener lookup failed');
-      const pairs = await resp.json();
-
-      let symbol = 'UNKNOWN';
-      let name = 'Unknown Token';
-      if (Array.isArray(pairs) && pairs.length > 0) {
-        const pair = pairs[0];
-        const baseAddr = pair.baseToken?.address?.toLowerCase();
-        if (baseAddr === addr.toLowerCase()) {
-          symbol = pair.baseToken.symbol ?? symbol;
-          name = pair.baseToken.name ?? name;
-        } else {
-          symbol = pair.quoteToken?.symbol ?? symbol;
-          name = pair.quoteToken?.name ?? name;
-        }
+      if (!isOfficial) {
+        setStatus('warn');
+        setMessage('非官方 Robinhood 股票代币，拒绝添加');
+        return;
       }
+
+      setMessage('读取链上 symbol/name...');
+      const { symbol, name } = await readTokenSymbolName(addr);
 
       const token: StockToken = {
         address: addr.toLowerCase(),
         symbol,
         name: name.replace(/\s*•\s*Robinhood Token$/, ''),
-        official: isOfficial,
+        official: true,
       };
 
       saveUserToken(token);
       onRegistered(token);
       setStatus('ok');
-      setMessage(`已登记 ${symbol}${isOfficial ? ' (官方)' : ' (非官方)'}`);
+      setMessage(`已登记 ${symbol} (官方)`);
       setAddress('');
+      setPendingToken(null);
       setTimeout(() => { setOpen(false); setStatus('idle'); setMessage(''); }, 2000);
     } catch (err) {
       setStatus('error');
       setMessage(err instanceof Error ? err.message : String(err));
     }
   }, [address, onRegistered]);
+
+  const handleForceAdd = useCallback(async () => {
+    if (!pendingToken) return;
+    saveUserToken(pendingToken);
+    onRegistered(pendingToken);
+    setStatus('ok');
+    setMessage(`已登记 ${pendingToken.symbol} (非官方，风险自负)`);
+    setAddress('');
+    setPendingToken(null);
+    setTimeout(() => { setOpen(false); setStatus('idle'); setMessage(''); }, 2000);
+  }, [pendingToken, onRegistered]);
 
   if (!open) {
     return (
@@ -87,11 +91,16 @@ export function RegisterToken({ onRegistered }: Props) {
       >
         {status === 'checking' ? '...' : '验证并登记'}
       </button>
-      <button className="register-cancel" onClick={() => { setOpen(false); setStatus('idle'); }}>
+      <button className="register-cancel" onClick={() => { setOpen(false); setStatus('idle'); setPendingToken(null); }}>
         取消
       </button>
       {message && (
         <span className={`register-msg ${status}`}>{message}</span>
+      )}
+      {status === 'warn' && (
+        <button className="register-cancel" onClick={handleForceAdd}>
+          仍然添加（风险自负）
+        </button>
       )}
     </div>
   );

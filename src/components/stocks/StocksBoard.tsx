@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import type { StockFeeRow } from '../../types/stocks';
 import { useStocksBoard } from '../../hooks/useStocksBoard';
 import { useStockDetail } from '../../hooks/useStockDetail';
+import { getSamplerStats } from '../../services/stocks/feeSampler';
 import { StockTopBar } from './StockTopBar';
 import { StockFeeList } from './StockFeeList';
 import { StockDetailPanel } from './StockDetailPanel';
@@ -11,6 +12,8 @@ import './stocks.css';
 interface Props {
   onBack: () => void;
 }
+
+const DEFAULT_SYMBOL = 'HIMS';
 
 export function StocksBoard({ onBack }: Props) {
   const {
@@ -27,7 +30,20 @@ export function StocksBoard({ onBack }: Props) {
     refresh,
   } = useStocksBoard();
 
-  const [selectedRow, setSelectedRow] = useState<StockFeeRow | null>(null);
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(() => {
+    try { return localStorage.getItem('stocks-selected-symbol') ?? DEFAULT_SYMBOL; } catch { return DEFAULT_SYMBOL; }
+  });
+
+  useEffect(() => {
+    try {
+      if (selectedSymbol) localStorage.setItem('stocks-selected-symbol', selectedSymbol);
+    } catch {}
+  }, [selectedSymbol]);
+
+  const selectedRow: StockFeeRow | null = useMemo(() => {
+    if (!selectedSymbol) return null;
+    return rows.find(r => r.symbol === selectedSymbol) ?? null;
+  }, [selectedSymbol, rows]);
 
   const {
     quotes,
@@ -39,6 +55,10 @@ export function StocksBoard({ onBack }: Props) {
     perpLoading,
     klineData,
   } = useStockDetail(selectedRow, autoRefresh);
+
+  const handleSelect = (row: StockFeeRow) => {
+    setSelectedSymbol(row.symbol);
+  };
 
   return (
     <div className="stocks-board">
@@ -54,6 +74,7 @@ export function StocksBoard({ onBack }: Props) {
         onAutoRefreshToggle={() => setAutoRefresh(!autoRefresh)}
         onRefresh={refresh}
         errors={errors}
+        rowCount={rows.length}
       />
       <div className="stocks-panels">
         <div className="stocks-left">
@@ -64,8 +85,8 @@ export function StocksBoard({ onBack }: Props) {
             rows={rows}
             loading={loading}
             sortWindow={sortWindow}
-            selectedSymbol={selectedRow?.symbol ?? null}
-            onSelect={setSelectedRow}
+            selectedSymbol={selectedSymbol}
+            onSelect={handleSelect}
           />
         </div>
         <div className="stocks-right">
@@ -83,11 +104,31 @@ export function StocksBoard({ onBack }: Props) {
             />
           ) : (
             <div className="stocks-placeholder">
-              <p>选择左侧股票查看详情</p>
+              <p>{selectedSymbol ? `${selectedSymbol} 暂无数据，等待发现...` : '选择左侧股票查看详情'}</p>
             </div>
           )}
         </div>
       </div>
+      <StocksFooter />
+    </div>
+  );
+}
+
+function StocksFooter() {
+  const stats = getSamplerStats();
+  const totalSamples = stats.fastCount + stats.slowCount;
+
+  const nextSample = (): string => {
+    const now = Date.now();
+    const nextFast = stats.lastFastTime + 5 * 60 * 1000;
+    const target = Math.max(nextFast, now);
+    const d = new Date(target);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="stocks-footer">
+      下次采样 {nextSample()} · 已采 {totalSamples} 次
     </div>
   );
 }

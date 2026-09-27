@@ -28,9 +28,12 @@ function contractToSymbol(name: string): string {
   return name.replace(/_USDT$/, '').replace(/_USDC$/, '');
 }
 
+const XSTOCKS_CONTRACTS = new Set([
+  'TQQQX_USDT', 'FUTUON_USDT', 'SQQQ3X_USDT', 'TQQQ3X_USDT',
+]);
+
 function isXStocks(name: string): boolean {
-  const sym = contractToSymbol(name);
-  return /X$/.test(sym) || /ON$/.test(sym) || /x$/.test(sym);
+  return XSTOCKS_CONTRACTS.has(name);
 }
 
 export function parseGateContracts(data: GateContract[]): Map<string, GateContract> {

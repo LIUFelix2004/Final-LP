@@ -131,8 +131,8 @@
 }
 
 .stocks-left {
-  width: 420px;
-  min-width: 360px;
+  width: 560px;
+  min-width: 480px;
   border-right: 1px solid var(--border);
   overflow-y: auto;
 }
@@ -197,15 +197,19 @@
   padding-left: 9px;
 }
 
-.col-rank { width: 28px; color: var(--text-muted); text-align: center; }
+.col-rank { width: 28px; color: var(--text-muted); text-align: center; flex-shrink: 0; }
 .col-symbol {
-  flex: 1;
-  min-width: 0;
+  width: 72px;
+  min-width: 60px;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
 }
 .stock-sym { font-weight: 600; color: var(--text-primary); }
 .stock-name { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.col-fee-cell { flex: 1; min-width: 42px; text-align: right; font-family: monospace; font-size: 11px; }
+.col-fee-cell.positive { color: var(--accent-green); }
+.col-fee-cell.active-col { font-weight: 700; }
 .col-price { width: 72px; text-align: right; font-family: monospace; }
 .col-fee { width: 72px; text-align: right; font-family: monospace; }
 .col-fee.positive { color: var(--accent-green); }
@@ -227,6 +231,33 @@
   color: var(--text-secondary);
   font-size: 14px;
 }
+.stock-detail-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-left: 8px;
+  background: rgba(88, 166, 255, 0.1);
+  color: var(--accent-blue);
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+.market-et-time {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: monospace;
+  align-self: center;
+}
+.premium-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  align-self: center;
+}
+.premium-badge.badge-ok { background: rgba(63, 185, 80, 0.1); color: var(--accent-green); }
+.premium-badge.badge-warn { background: rgba(248, 81, 73, 0.1); color: var(--accent-red); }
+.premium-badge.badge-good { background: rgba(88, 166, 255, 0.1); color: var(--accent-blue); }
 
 .stock-detail-meta {
   display: flex;
@@ -334,11 +365,15 @@
 }
 
 .fpt-col-ex,
-.ft-col-ex { width: 100px; display: flex; align-items: center; gap: 6px; }
+.ft-col-ex { width: 90px; display: flex; align-items: center; gap: 6px; }
+.fpt-col-contract { width: 100px; color: var(--text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fpt-col-last { width: 72px; text-align: right; font-family: monospace; }
 .fpt-col-mark,
-.fpt-col-index { width: 80px; text-align: right; font-family: monospace; }
-.fpt-col-vol { width: 72px; text-align: right; }
-.fpt-col-prem { width: 72px; text-align: right; font-family: monospace; }
+.fpt-col-index { width: 72px; text-align: right; font-family: monospace; }
+.fpt-col-vol { width: 64px; text-align: right; }
+.fpt-col-prem { width: 64px; text-align: right; font-family: monospace; }
+.fpt-row.low-vol { opacity: 0.45; }
+.fpt-footnote { font-size: 11px; color: var(--text-muted); padding-top: 6px; }
 
 .ft-col-rate { width: 90px; text-align: right; font-family: monospace; }
 .ft-col-8h { width: 90px; text-align: right; font-family: monospace; }
@@ -450,6 +485,15 @@
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
+}
+
+.stocks-footer {
+  padding: 4px 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  text-align: center;
 }
 
 .stocks-left-actions {

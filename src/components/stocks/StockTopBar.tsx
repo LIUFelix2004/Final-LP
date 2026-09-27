@@ -13,10 +13,15 @@ interface Props {
   onAutoRefreshToggle: () => void;
   onRefresh: () => void;
   errors: string[];
+  rowCount: number;
 }
 
 const NATIVE_WINDOWS: StockSortWindow[] = ['m5', 'h1', 'h24'];
 const SAMPLED_WINDOWS: StockSortWindow[] = ['m30', 'h48', 'h72', 'd7'];
+
+function formatTime(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+}
 
 export function StockTopBar({
   onBack,
@@ -30,6 +35,7 @@ export function StockTopBar({
   onAutoRefreshToggle,
   onRefresh,
   errors,
+  rowCount,
 }: Props) {
   return (
     <div className="stocks-topbar">
@@ -37,15 +43,13 @@ export function StockTopBar({
         <button className="stocks-back-btn" onClick={onBack} title="返回 LP 榜单">
           LP 榜单
         </button>
-        <span className="stocks-title">股票看板</span>
+        <span className="stocks-title">
+          热门股票 · USDG 池手续费 {rowCount > 0 ? `${rowCount} 只` : ''}
+          {lastUpdate && ` · ${formatTime(lastUpdate)}`}
+        </span>
         {discovering && (
           <span className="stocks-discovering">
             发现池 {discoveryProgress.current}/{discoveryProgress.total}
-          </span>
-        )}
-        {lastUpdate && (
-          <span className="stocks-last-update">
-            {lastUpdate.toLocaleTimeString()}
           </span>
         )}
       </div>
@@ -74,7 +78,7 @@ export function StockTopBar({
         </div>
         <label className="stocks-auto-toggle" title="自动刷新">
           <input type="checkbox" checked={autoRefresh} onChange={onAutoRefreshToggle} />
-          自动
+          自动刷新
         </label>
         <button
           className="stocks-refresh-btn"

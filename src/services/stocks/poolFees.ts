@@ -51,6 +51,25 @@ function v4PoolSlot0StorageSlot(poolId: Hex): Hex {
   );
 }
 
+async function multicallWithRetry<T>(
+  client: ReturnType<typeof getClient>,
+  contracts: Parameters<ReturnType<typeof getClient>['multicall']>[0]['contracts'],
+  retries = 2,
+): Promise<Array<{ status: 'success' | 'failure'; result?: T; error?: Error }>> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await client.multicall({ contracts, allowFailure: true }) as Array<{ status: 'success' | 'failure'; result?: T; error?: Error }>;
+    } catch (err) {
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('multicall retries exhausted');
+}
+
 export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool[]> {
   if (pools.length === 0) return pools;
 
@@ -80,7 +99,7 @@ export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool
       functionName: 'fee' as const,
     }));
     try {
-      const results = await client.multicall({ contracts: calls, allowFailure: true });
+      const results = await multicallWithRetry(client, calls);
       for (let i = 0; i < results.length; i++) {
         const r = results[i];
         if (r.status === 'success' && r.result != null) {
@@ -99,32 +118,52 @@ export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool
 
   if (upPools.length > 0) {
     try {
-      const tsCalls = upPools.map(({ pool }) => ({
+      const feeCalls = upPools.map(({ pool }) => ({
         address: pool.pairAddress as Address,
-        abi: SLIPSTREAM_POOL_ABI,
-        functionName: 'tickSpacing' as const,
+        abi: V3_FEE_ABI,
+        functionName: 'fee' as const,
       }));
-      const tsResults = await client.multicall({ contracts: tsCalls, allowFailure: true });
-      const tickSpacings: Array<{ origIdx: number; ts: number }> = [];
-      for (let i = 0; i < tsResults.length; i++) {
-        const r = tsResults[i];
-        if (r.status === 'success' && r.result != null) {
-          tickSpacings.push({ origIdx: upPools[i].idx, ts: Number(r.result) });
+      const feeResults = await multicallWithRetry(client, feeCalls);
+
+      const needTickSpacing: Array<{ idx: number; pool: StockPool }> = [];
+      for (let i = 0; i < feeResults.length; i++) {
+        const r = feeResults[i];
+        if (r.status === 'success' && r.result != null && Number(r.result) > 0) {
+          const fee = Number(r.result) / 10000;
+          result[upPools[i].idx] = { ...result[upPools[i].idx], feeRate: fee, feeRateInferred: false };
+        } else {
+          needTickSpacing.push(upPools[i]);
         }
       }
-      if (tickSpacings.length > 0) {
-        const feeCalls = tickSpacings.map(({ ts }) => ({
-          address: UP33_CL_FACTORY as Address,
-          abi: SLIPSTREAM_FACTORY_ABI,
-          functionName: 'tickSpacingToFee' as const,
-          args: [ts] as const,
+
+      if (needTickSpacing.length > 0) {
+        const tsCalls = needTickSpacing.map(({ pool }) => ({
+          address: pool.pairAddress as Address,
+          abi: SLIPSTREAM_POOL_ABI,
+          functionName: 'tickSpacing' as const,
         }));
-        const feeResults = await client.multicall({ contracts: feeCalls, allowFailure: true });
-        for (let i = 0; i < feeResults.length; i++) {
-          const r = feeResults[i];
+        const tsResults = await multicallWithRetry(client, tsCalls);
+        const tickSpacings: Array<{ origIdx: number; ts: number }> = [];
+        for (let i = 0; i < tsResults.length; i++) {
+          const r = tsResults[i];
           if (r.status === 'success' && r.result != null) {
-            const feePpm = Number(r.result);
-            result[tickSpacings[i].origIdx] = { ...result[tickSpacings[i].origIdx], feeRate: feePpm / 10000, feeRateInferred: false };
+            tickSpacings.push({ origIdx: needTickSpacing[i].idx, ts: Number(r.result) });
+          }
+        }
+        if (tickSpacings.length > 0) {
+          const tsfCalls = tickSpacings.map(({ ts }) => ({
+            address: UP33_CL_FACTORY as Address,
+            abi: SLIPSTREAM_FACTORY_ABI,
+            functionName: 'tickSpacingToFee' as const,
+            args: [ts] as const,
+          }));
+          const tsfResults = await multicallWithRetry(client, tsfCalls);
+          for (let i = 0; i < tsfResults.length; i++) {
+            const r = tsfResults[i];
+            if (r.status === 'success' && r.result != null) {
+              const feePpm = Number(r.result);
+              result[tickSpacings[i].origIdx] = { ...result[tickSpacings[i].origIdx], feeRate: feePpm / 10000, feeRateInferred: true };
+            }
           }
         }
       }
@@ -143,7 +182,7 @@ export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool
       };
     });
     try {
-      const results2 = await client.multicall({ contracts: extsloadCalls, allowFailure: true });
+      const results2 = await multicallWithRetry(client, extsloadCalls);
       for (let i = 0; i < results2.length; i++) {
         const r = results2[i];
         if (r.status === 'success' && r.result != null) {

@@ -33,7 +33,8 @@ export function useStocksBoard() {
   });
   const [userAddedSymbols, setUserAddedSymbols] = useState<Set<string>>(new Set());
 
-  const generationRef = useRef(0);
+  const discoveryGenRef = useRef(0);
+  const refreshGenRef = useRef(0);
   const poolsRef = useRef<Map<string, StockPool[]>>(new Map());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -52,7 +53,7 @@ export function useStocksBoard() {
   }, [userAddedSymbols]);
 
   const refresh = useCallback(async () => {
-    const gen = ++generationRef.current;
+    const gen = ++refreshGenRef.current;
     try {
       const allPools: StockPool[] = [];
       for (const pools of poolsRef.current.values()) {
@@ -61,7 +62,7 @@ export function useStocksBoard() {
       if (allPools.length === 0) return;
 
       const pairMap = await refreshPoolPrices(allPools);
-      if (gen !== generationRef.current) return;
+      if (gen !== refreshGenRef.current) return;
 
       for (const [addr, pools] of poolsRef.current) {
         const token = registry.find(t => t.address.toLowerCase() === addr);
@@ -79,7 +80,7 @@ export function useStocksBoard() {
   }, [registry, buildRows]);
 
   useEffect(() => {
-    const gen = ++generationRef.current;
+    const gen = ++discoveryGenRef.current;
     let cancelled = false;
 
     async function init() {
@@ -146,25 +147,24 @@ export function useStocksBoard() {
         ];
 
         for (let i = 0; i < prioritized.length; i++) {
-          if (cancelled || gen !== generationRef.current) return;
+          if (cancelled || gen !== discoveryGenRef.current) return;
           const token = prioritized[i];
           setDiscoveryProgress({ current: i + 1, total: prioritized.length });
           try {
             const pools = await discoverPoolsForToken(token);
             if (cancelled) return;
-            if (pools.length > 0) {
-              const enriched = await enrichStockPoolFees(pools);
-              poolsRef.current.set(token.address.toLowerCase(), enriched);
+            const enriched = pools.length > 0 ? await enrichStockPoolFees(pools) : [];
+            poolsRef.current.set(token.address.toLowerCase(), enriched);
 
-              poolCache.set(token.address.toLowerCase(), {
-                tokenAddress: token.address,
-                pools: enriched,
-                timestamp: Date.now(),
-              });
-            }
+            poolCache.set(token.address.toLowerCase(), {
+              tokenAddress: token.address,
+              pools: enriched,
+              timestamp: Date.now(),
+            });
           } catch { /* skip this token */ }
 
           if (i % 5 === 4 || i === prioritized.length - 1) {
+            savePoolCache(poolCache);
             const rows = buildRows(tokens, poolsRef.current);
             setFeeRows(rows);
             if (loading) { setLoading(false); setLastUpdate(new Date()); }
@@ -175,7 +175,6 @@ export function useStocksBoard() {
           }
         }
 
-        savePoolCache(poolCache);
         setDiscovering(false);
         if (loading) setLoading(false);
         setLastUpdate(new Date());
@@ -184,7 +183,10 @@ export function useStocksBoard() {
       }
     }
 
-    init();
+    init().catch(() => {
+      setDiscovering(false);
+      setLoading(false);
+    });
     return () => { cancelled = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

@@ -40,7 +40,6 @@ function getClient() {
 export async function enumerateOfficialTokens(): Promise<StockToken[]> {
   const client = getClient();
 
-  const beaconPadded = `0x${OFFICIAL_BEACON.replace('0x', '').padStart(64, '0')}` as Hex;
   const logs = await client.getLogs({
     event: parseAbiItem('event BeaconUpgraded(address indexed beacon)'),
     args: { beacon: OFFICIAL_BEACON as Address },
@@ -88,6 +87,17 @@ export async function enumerateOfficialTokens(): Promise<StockToken[]> {
   }
 
   return tokens;
+}
+
+export async function readTokenSymbolName(address: string): Promise<{ symbol: string; name: string }> {
+  const client = getClient();
+  const [symResult, nameResult] = await Promise.all([
+    client.readContract({ address: address as Address, abi: ERC20_SYMBOL_ABI, functionName: 'symbol' }),
+    client.readContract({ address: address as Address, abi: ERC20_NAME_ABI, functionName: 'name' }).catch(() => null),
+  ]);
+  const symbol = symResult as string;
+  const name = nameResult ? (nameResult as string).replace(/\s*•\s*Robinhood Token$/, '') : symbol;
+  return { symbol, name };
 }
 
 export async function verifyOfficialToken(address: string): Promise<boolean> {

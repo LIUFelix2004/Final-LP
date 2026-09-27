@@ -60,7 +60,7 @@ export function funding8hEquivalent(rate: number, intervalHours: number): number
 export function bucketFunding8h(
   points: FundingPoint[],
   now: number,
-  intervalHours: number,
+  _intervalHours: number,
 ): FundingBucket[] {
   const BUCKET_MS = 8 * 3600 * 1000;
   const buckets: FundingBucket[] = [];
@@ -142,8 +142,8 @@ export function bestLongExchange(quotes: PerpQuote[]): PerpQuote | null {
 
 export function buildSignals(
   premium: number | null,
-  onchainPrice: number | null,
-  fair: number | null,
+  _onchainPrice: number | null,
+  _fair: number | null,
   participatingCount: number,
   mainPoolLiquidity: number | null,
   session: MarketSession,
@@ -194,7 +194,7 @@ export function buildSignals(
 
   if (session.state !== 'regular') {
     signals.push({
-      text: `美股${session.label}：永续价格由各所内部指数/周末定价驱动，溢价参考性下降`,
+      text: `${session.label}：永续价格由各所内部指数/周末定价驱动，溢价参考性下降`,
       color: 'orange',
     });
   }

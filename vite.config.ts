@@ -123,11 +123,43 @@ function cexProxyPlugin(proxyUrl: string): Plugin {
   return {
     name: 'cex-proxy',
     configureServer(server) {
-      server.middlewares.use('/api/cex/hl', async (req, res, next) => {
+      const hlCache = new Map<string, { data: string; time: number }>()
+      const HL_CACHE_MS = 4_000
+
+      server.middlewares.use('/api/cex/hl', async (req, res, _next) => {
         if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
         try {
           const body = await readBody(req)
-          await proxyFetch('https://api.hyperliquid.xyz/info', proxyUrl, { 'Content-Type': 'application/json' }, res, 'POST', body)
+          const cached = hlCache.get(body)
+          if (cached && Date.now() - cached.time < HL_CACHE_MS) {
+            res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' })
+            res.end(cached.data)
+            return
+          }
+
+          const doFetch = async (): Promise<string> => {
+            const proxyEnv = proxyUrl || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.https_proxy || process.env.http_proxy
+            let fetchFn: typeof globalThis.fetch = globalThis.fetch
+            let fetchInit: RequestInit & { dispatcher?: unknown } = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: AbortSignal.timeout(10_000) }
+            if (proxyEnv) {
+              const undici = await import('undici')
+              const dispatcher = new undici.ProxyAgent(proxyEnv)
+              fetchFn = undici.fetch as unknown as typeof globalThis.fetch
+              fetchInit = { ...fetchInit, dispatcher } as unknown as RequestInit
+            }
+            const r = await fetchFn('https://api.hyperliquid.xyz/info', fetchInit)
+            if (r.status === 429) {
+              if (cached) return cached.data
+              throw new Error('429 Too Many Requests')
+            }
+            if (!r.ok) throw new Error(`${r.status}`)
+            return r.text()
+          }
+
+          const text = await doFetch()
+          hlCache.set(body, { data: text, time: Date.now() })
+          res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' })
+          res.end(text)
         } catch (err) {
           console.error('[cex-proxy] hyperliquid:', err)
           if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' })
@@ -141,9 +173,16 @@ function cexProxyPlugin(proxyUrl: string): Plugin {
         const match = url.match(/^\/api\/cex\/(\w+)(\/.+)$/)
         if (!match) return next()
 
-        const [, exchange, path] = match
+        const [, exchange, rawPath] = match
         const route = CEX_ROUTES[exchange]
         if (!route) return next()
+
+        if (rawPath.includes('..') || rawPath.includes('%2e') || rawPath.includes('%2E')) {
+          res.writeHead(403, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: 'path_traversal_rejected' }))
+          return
+        }
+        const path = new URL(rawPath, 'http://localhost').pathname + (rawPath.includes('?') ? '?' + rawPath.split('?').slice(1).join('?') : '')
 
         const whitelist = CEX_PATH_WHITELIST[exchange]
         if (whitelist && !whitelist.test(path)) {

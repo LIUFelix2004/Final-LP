@@ -38,10 +38,6 @@ function safeNum(s: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function isUsdg(addr: string): boolean {
-  return addr.toLowerCase() === USDG_ADDRESS.toLowerCase();
-}
-
 interface DsPair {
   chainId: string;
   dexId: string;

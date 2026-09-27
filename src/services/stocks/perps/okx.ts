@@ -118,16 +118,30 @@ export async function fetchOkxData(fetchFn: typeof fetch): Promise<{
     instrumentsCacheTime = now;
   }
 
-  const [markResp, tickerResp, frResp, indexResp] = await Promise.all([
+  const stockInstIds = [...instrumentsCache.keys()];
+
+  const [markResp, tickerResp, indexResp] = await Promise.all([
     fetchFn('/api/cex/okx/api/v5/public/mark-price?instType=SWAP'),
     fetchFn('/api/cex/okx/api/v5/market/tickers?instType=SWAP'),
-    fetchFn('/api/cex/okx/api/v5/public/funding-rate?instType=SWAP'),
     fetchFn('/api/cex/okx/api/v5/market/index-tickers?quoteCcy=USDT'),
   ]);
 
+  const frBatch = await Promise.allSettled(
+    stockInstIds.slice(0, 30).map(instId =>
+      fetchFn(`/api/cex/okx/api/v5/public/funding-rate?instId=${instId}`).then(async r => {
+        if (!r.ok) return [];
+        const d = await r.json();
+        return (d.data ?? []) as OkxFundingRate[];
+      })
+    )
+  );
+  const frDataAll: OkxFundingRate[] = [];
+  for (const r of frBatch) {
+    if (r.status === 'fulfilled') frDataAll.push(...r.value);
+  }
+
   const markData = markResp.ok ? await markResp.json() : { data: [] };
   const tickerData = tickerResp.ok ? await tickerResp.json() : { data: [] };
-  const frData = frResp.ok ? await frResp.json() : { data: [] };
   const indexData = indexResp.ok ? await indexResp.json() : { data: [] };
 
   const marks = new Map<string, string>();
@@ -141,7 +155,7 @@ export async function fetchOkxData(fetchFn: typeof fetch): Promise<{
   }
 
   const fundingRates = new Map<string, OkxFundingRate>();
-  for (const f of (frData.data ?? []) as OkxFundingRate[]) {
+  for (const f of frDataAll) {
     fundingRates.set(f.instId, f);
   }
 

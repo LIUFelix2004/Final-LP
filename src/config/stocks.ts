@@ -107,6 +107,6 @@ export const SEED_STOCKS: StockToken[] = [
   { address: '0x58ffe4a942d3885baa22d7520691f611ef09e7aa', symbol: 'TSM', name: 'TSMC', official: true },
   { address: '0x411efb0e7f985935daec3d4c3ebaea0d0ad7d89f', symbol: 'SLV', name: 'iShares Silver Trust', official: true },
   { address: '0x05b37fb53a299a1b874a619e1c4c404d52c36f4c', symbol: 'RDDT', name: 'Reddit', official: true },
-  { address: '0x5f10a1c971b69e47e059e1dc91901b59b3fb49c3', symbol: 'CRWV', name: 'CrowdStrike', official: true },
+  { address: '0x5f10a1c971b69e47e059e1dc91901b59b3fb49c3', symbol: 'CRWV', name: 'CoreWeave', official: true },
   { address: '0xc01aa1fecec0605b13bc84874ff7256c0f5f562a', symbol: 'SMCI', name: 'Super Micro Computer', official: true },
 ];

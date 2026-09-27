@@ -25,8 +25,9 @@ export function FundingTable({ quotes, buckets }: Props) {
         </div>
         {quotes.map(q => {
           const meta = EXCHANGE_META[q.exchange] ?? { name: q.exchange, color: '#888' };
-          const eq8h = funding8hEquivalent(q.fundingRate, q.fundingIntervalHours);
-          const ann = annualizeFunding(q.fundingRate, q.fundingIntervalHours);
+          const hasRate = q.fundingRate !== null && Number.isFinite(q.fundingRate);
+          const eq8h = hasRate ? funding8hEquivalent(q.fundingRate!, q.fundingIntervalHours) : null;
+          const ann = hasRate ? annualizeFunding(q.fundingRate!, q.fundingIntervalHours) : null;
           return (
             <div key={q.exchange} className="ft-row">
               <span className="ft-col-ex">
@@ -34,9 +35,9 @@ export function FundingTable({ quotes, buckets }: Props) {
                 {meta.name}
               </span>
               <span className="ft-col-rate">{formatSignedPercent(q.fundingRate, 4)}</span>
-              <span className="ft-col-8h">{formatSignedPercent(eq8h, 4)}</span>
-              <span className={`ft-col-ann ${ann > 0 ? 'positive' : ann < 0 ? 'negative' : ''}`}>
-                {formatSignedPercent(ann)}
+              <span className="ft-col-8h">{eq8h !== null ? formatSignedPercent(eq8h, 4) : '—'}</span>
+              <span className={`ft-col-ann ${ann !== null && ann > 0 ? 'positive' : ann !== null && ann < 0 ? 'negative' : ''}`}>
+                {ann !== null ? formatSignedPercent(ann) : '—'}
               </span>
               <span className="ft-col-int">{q.fundingIntervalHours}h</span>
             </div>
