@@ -16,6 +16,7 @@ interface Props {
   perpErrors: string[];
   perpLoading: boolean;
   klineData: unknown[] | null;
+  klineSource: string | null;
 }
 
 function premiumBadge(premium: number | null): { text: string; cls: string } | null {
@@ -36,6 +37,7 @@ export function StockDetailPanel({
   perpErrors,
   perpLoading,
   klineData,
+  klineSource,
 }: Props) {
   const session = getUsMarketSession();
   const badge = premiumBadge(premium);
@@ -84,7 +86,7 @@ export function StockDetailPanel({
 
       <div className="stock-detail-section">
         <h3>公允价 K 线</h3>
-        <KlineChart data={klineData} source={`Binance ${row.symbol}USDT`} />
+        <KlineChart data={klineData} source={klineSource ?? undefined} />
       </div>
 
       <div className="stock-detail-section">

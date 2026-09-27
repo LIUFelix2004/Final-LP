@@ -110,8 +110,8 @@ export function bucketFunding8hMultiExchange(
       if (inBucket.length === 0) {
         rates[exchange] = null;
       } else {
-        const sum8hEq = inBucket.reduce((s, p) => s + funding8hEquivalent(p.rate, data.intervalHours), 0);
-        rates[exchange] = sum8hEq;
+        const sum = inBucket.reduce((s, p) => s + p.rate, 0);
+        rates[exchange] = sum;
       }
     }
 

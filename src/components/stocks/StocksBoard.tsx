@@ -54,6 +54,7 @@ export function StocksBoard({ onBack }: Props) {
     perpErrors,
     perpLoading,
     klineData,
+    klineSource,
   } = useStockDetail(selectedRow, autoRefresh);
 
   const handleSelect = (row: StockFeeRow) => {
@@ -79,9 +80,11 @@ export function StocksBoard({ onBack }: Props) {
       {rows.length > 0 && (() => {
         const totalUnknown = rows.reduce((s, r) => s + r.feeUnknownCount, 0);
         if (totalUnknown === 0) return null;
+        const totalVol = rows.reduce((s, r) => s + r.feeUnknownVolume24h, 0);
+        const volStr = totalVol >= 1000 ? `$${(totalVol / 1000).toFixed(0)}K` : `$${totalVol.toFixed(0)}`;
         return (
           <div className="stocks-rpc-warn">
-            {totalUnknown} 个池费率读取失败（RPC 超时或合约不支持）
+            {totalUnknown} 个池费率未知（含 V4 动态费 / RPC 未返回），{volStr} 24H 交易量未计入
           </div>
         );
       })()}
@@ -110,6 +113,7 @@ export function StocksBoard({ onBack }: Props) {
               perpErrors={perpErrors}
               perpLoading={perpLoading}
               klineData={klineData}
+              klineSource={klineSource}
             />
           ) : (
             <div className="stocks-placeholder">

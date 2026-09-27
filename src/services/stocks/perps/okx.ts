@@ -122,7 +122,7 @@ export async function fetchOkxData(fetchFn: typeof fetch): Promise<{
     fetchFn('/api/cex/okx/api/v5/public/mark-price?instType=SWAP'),
     fetchFn('/api/cex/okx/api/v5/market/tickers?instType=SWAP'),
     fetchFn('/api/cex/okx/api/v5/market/index-tickers?quoteCcy=USDT'),
-    fetchFn('/api/cex/okx/api/v5/public/funding-rate?instType=SWAP'),
+    fetchFn('/api/cex/okx/api/v5/public/funding-rate?instId=ANY'),
   ]);
 
   const markData = markResp.ok ? await markResp.json() : { data: [] };

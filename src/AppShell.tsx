@@ -35,9 +35,11 @@ export function AppShell() {
   const [boardState, setBoardState] = useState<BoardState>(loadBoardState);
 
   const handleSelectStocks = useCallback(() => {
-    const next: BoardState = { board: 'stocks' };
-    setBoardState(next);
-    saveBoardState(next);
+    setBoardState(prev => {
+      const next: BoardState = { ...prev, board: 'stocks' };
+      saveBoardState(next);
+      return next;
+    });
   }, []);
 
   const handleSelectLp = useCallback(() => {

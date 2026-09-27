@@ -129,7 +129,7 @@ function computeM30(symbol: string, store: SamplerStore, now: number): { value: 
   if (!points || points.length === 0) return { value: null, count: 0 };
 
   const cutoff = now - 30 * 60 * 1000;
-  const recent = points.filter(p => p[0] >= cutoff && p[1] !== null);
+  const recent = points.filter(p => p[0] > cutoff && p[1] !== null).slice(-6);
   if (recent.length === 0) return { value: null, count: 0 };
 
   const expectedBuckets = 6;

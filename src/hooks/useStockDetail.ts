@@ -16,6 +16,7 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
   const [perpErrors, setPerpErrors] = useState<string[]>([]);
   const [perpLoading, setPerpLoading] = useState(false);
   const [klineData, setKlineData] = useState<unknown[] | null>(null);
+  const [klineSource, setKlineSource] = useState<string | null>(null);
 
   const generationRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -111,6 +112,7 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
 
   useEffect(() => {
     setKlineData(null);
+    setKlineSource(null);
     if (!selectedRow) {
       return;
     }
@@ -122,7 +124,10 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
         const resp = await fetch(`/api/cex/binance/fapi/v1/klines?symbol=${symbol}USDT&interval=1h&limit=168`);
         if (!resp.ok) throw new Error(`${resp.status}`);
         const data = await resp.json();
-        if (!cancelled) setKlineData(data);
+        if (!cancelled) {
+          setKlineData(data);
+          setKlineSource(`Binance ${symbol}USDT`);
+        }
       } catch {
         try {
           const resp = await fetch('/api/cex/hl', {
@@ -141,6 +146,7 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
           if (resp.ok && !cancelled) {
             const data = await resp.json();
             setKlineData(data);
+            setKlineSource(`Hyperliquid xyz:${symbol}`);
           }
         } catch { /* no kline available */ }
       }
@@ -159,5 +165,6 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     perpErrors,
     perpLoading,
     klineData,
+    klineSource,
   };
 }

@@ -1,5 +1,6 @@
 import type { StockFeeRow, StockSortWindow } from '../../types/stocks';
 import { STOCK_SORT_LABELS } from '../../config/stocks';
+import { getM30SampleCount } from '../../services/stocks/feeSampler';
 
 interface Props {
   rows: StockFeeRow[];
@@ -76,10 +77,14 @@ export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSele
               if (isSampled && val === null) {
                 tooltip = '需要浏览器持续打开采样';
               } else if (w === 'm30' && val !== null) {
-                tooltip = `采样 k/6（k = 30分钟内采样点数）`;
+                const k = getM30SampleCount(row.symbol);
+                tooltip = `采样 ${k}/6${k < 6 ? '（已外推）' : ''}`;
               }
               if (row.feeUnknownCount > 0 && !isSampled) {
-                tooltip = `${row.feeUnknownCount} 个池费率未知` + (tooltip ? `；${tooltip}` : '');
+                const volStr = row.feeUnknownVolume24h >= 1000
+                  ? `$${(row.feeUnknownVolume24h / 1000).toFixed(0)}K`
+                  : `$${row.feeUnknownVolume24h.toFixed(0)}`;
+                tooltip = `${row.feeUnknownCount} 个池费率未知，${volStr} 未计入` + (tooltip ? `；${tooltip}` : '');
               }
               return (
                 <span
