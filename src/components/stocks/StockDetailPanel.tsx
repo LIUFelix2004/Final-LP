@@ -1,4 +1,5 @@
 import type { StockFeeRow, PerpQuote, FairPriceResult, FundingBucket, StockSignal } from '../../types/stocks';
+import type { AmountAnalysis } from '../../services/stocks/quote';
 import { FairPriceTable } from './FairPriceTable';
 import { FundingTable } from './FundingTable';
 import { StockSignals } from './StockSignals';
@@ -15,8 +16,11 @@ interface Props {
   fundingBuckets: FundingBucket[];
   perpErrors: string[];
   perpLoading: boolean;
+  perpStale: boolean;
   klineData: unknown[] | null;
   klineSource: string | null;
+  amountAnalysis: AmountAnalysis | null;
+  amountLoading: boolean;
 }
 
 function premiumBadge(premium: number | null): { text: string; cls: string } | null {
@@ -36,8 +40,11 @@ export function StockDetailPanel({
   fundingBuckets,
   perpErrors,
   perpLoading,
+  perpStale,
   klineData,
   klineSource,
+  amountAnalysis,
+  amountLoading,
 }: Props) {
   const session = getUsMarketSession();
   const badge = premiumBadge(premium);
@@ -55,6 +62,7 @@ export function StockDetailPanel({
           </span>
           <span className="market-et-time">ET {session.etTime}</span>
           {badge && <span className={`premium-badge ${badge.cls}`}>{badge.text}</span>}
+          {perpStale && <span className="perp-stale-badge">数据延迟</span>}
         </div>
       </div>
 
@@ -115,6 +123,45 @@ export function StockDetailPanel({
         <h3>信号</h3>
         <StockSignals signals={signals} />
       </div>
+
+      {(amountAnalysis || amountLoading) && (
+        <div className="stock-detail-section">
+          <h3>金额分析</h3>
+          {amountLoading ? (
+            <div className="detail-loading">模拟报价中...</div>
+          ) : amountAnalysis ? (
+            <div className="amount-analysis">
+              {amountAnalysis.buyResult && (
+                <div className="amount-row">
+                  <span className="amount-label">买入有效价</span>
+                  <span className="amount-value">{formatStockPrice(amountAnalysis.buyResult.effectivePrice)}</span>
+                  {amountAnalysis.buyPremium !== null && (
+                    <span className={`amount-premium ${amountAnalysis.buyPremium > 0.005 ? 'warn' : ''}`}>
+                      溢价 {formatSignedPercent(amountAnalysis.buyPremium)}
+                    </span>
+                  )}
+                  <span className="amount-pool">{amountAnalysis.buyResult.pool.dex} {amountAnalysis.buyResult.pool.version}</span>
+                </div>
+              )}
+              {amountAnalysis.sellResult && (
+                <div className="amount-row">
+                  <span className="amount-label">卖出有效价</span>
+                  <span className="amount-value">{formatStockPrice(amountAnalysis.sellResult.effectivePrice)}</span>
+                  {amountAnalysis.sellPremium !== null && (
+                    <span className={`amount-premium ${amountAnalysis.sellPremium > 0.005 ? 'warn' : ''}`}>
+                      滑价 {formatSignedPercent(amountAnalysis.sellPremium)}
+                    </span>
+                  )}
+                  <span className="amount-pool">{amountAnalysis.sellResult.pool.dex} {amountAnalysis.sellResult.pool.version}</span>
+                </div>
+              )}
+              {!amountAnalysis.buyResult && !amountAnalysis.sellResult && (
+                <div className="detail-empty">无可报价的 V3 池</div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      )}
 
       {perpErrors.length > 0 && (
         <div className="stock-detail-errors">

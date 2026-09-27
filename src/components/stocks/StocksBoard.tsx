@@ -7,6 +7,7 @@ import { StockTopBar } from './StockTopBar';
 import { StockFeeList } from './StockFeeList';
 import { StockDetailPanel } from './StockDetailPanel';
 import { RegisterToken } from './RegisterToken';
+import { AddSymbolInput } from './AddSymbolInput';
 import './stocks.css';
 
 interface Props {
@@ -28,6 +29,8 @@ export function StocksBoard({ onBack }: Props) {
     autoRefresh,
     setAutoRefresh,
     refresh,
+    addSymbol,
+    registry,
   } = useStocksBoard();
 
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(() => {
@@ -53,8 +56,13 @@ export function StocksBoard({ onBack }: Props) {
     fundingBuckets,
     perpErrors,
     perpLoading,
+    perpStale,
     klineData,
     klineSource,
+    amountUsdg,
+    setAmountUsdg,
+    amountAnalysis,
+    amountLoading,
   } = useStockDetail(selectedRow, autoRefresh);
 
   const handleSelect = (row: StockFeeRow) => {
@@ -76,6 +84,11 @@ export function StocksBoard({ onBack }: Props) {
         onRefresh={refresh}
         errors={errors}
         rowCount={rows.length}
+        rows={rows}
+        selectedSymbol={selectedSymbol}
+        onSelectSymbol={setSelectedSymbol}
+        amountUsdg={amountUsdg}
+        onAmountChange={setAmountUsdg}
       />
       {rows.length > 0 && (() => {
         const totalUnknown = rows.reduce((s, r) => s + r.feeUnknownCount, 0);
@@ -91,6 +104,10 @@ export function StocksBoard({ onBack }: Props) {
       <div className="stocks-panels">
         <div className="stocks-left">
           <div className="stocks-left-actions">
+            <AddSymbolInput
+              registry={registry}
+              onAdded={(token) => { addSymbol(token.symbol); refresh(); }}
+            />
             <RegisterToken onRegistered={() => refresh()} />
           </div>
           <StockFeeList
@@ -112,8 +129,11 @@ export function StocksBoard({ onBack }: Props) {
               fundingBuckets={fundingBuckets}
               perpErrors={perpErrors}
               perpLoading={perpLoading}
+              perpStale={perpStale}
               klineData={klineData}
               klineSource={klineSource}
+              amountAnalysis={amountAnalysis}
+              amountLoading={amountLoading}
             />
           ) : (
             <div className="stocks-placeholder">
