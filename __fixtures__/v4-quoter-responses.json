@@ -1,0 +1,38 @@
+{
+  "description": "Real V4Quoter (0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94) response data from Robinhood Chain (4663)",
+  "contract": "0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94",
+  "abi_outputs": "(uint256 amountOut, uint256 gasEstimate)",
+  "cases": [
+    {
+      "label": "TSLA buy 2000 USDG",
+      "tokenAddress": "0x322f12a3e8bab5ed8a62a32d163e0f7f03e044e1",
+      "tokenSymbol": "TSLA",
+      "direction": "buy",
+      "amountUsdg": 2000,
+      "poolKey": {
+        "currency0": "0x322f12a3e8bab5ed8a62a32d163e0f7f03e044e1",
+        "currency1": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+        "fee": 3000,
+        "tickSpacing": 60,
+        "hooks": "0x0000000000000000000000000000000000000000"
+      },
+      "zeroForOne": false,
+      "rawResponse": "0x0000000000000000000000000000000000000000000000004a6da73349b12112000000000000000000000000000000000000000000000000000000000000a57d",
+      "decoded": {
+        "amountOut": "5363126569989644562",
+        "gasEstimate": "42365"
+      },
+      "humanReadable": {
+        "amountOutTokens": 5.363126569989644,
+        "effectivePrice": 372.92
+      }
+    }
+  ],
+  "initializeEvent": {
+    "correctSignature": "Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)",
+    "paramCount": 8,
+    "topic0": "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438",
+    "wrongTopic0_7params": "0x9e5fdb1d8e5f36d82e75e0e5c12466a5583cc61a47a4e83af83cfb9567c2e3fa",
+    "note": "7-param version (missing int24 tick) produces wrong topic0 and returns no logs"
+  }
+}

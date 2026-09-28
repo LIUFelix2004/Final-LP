@@ -9,7 +9,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 const dsRateLimit = { tokens: 200, lastRefill: Date.now(), maxTokens: 200, refillRate: 200 / 60_000 };
-const dsGlobalPause = { until: 0, backoffMs: 30_000 };
+export const dsGlobalPause = { until: 0, backoffMs: 30_000 };
 export let dsRetryPending = 0;
 
 async function waitForDsToken(): Promise<void> {
@@ -52,20 +52,33 @@ async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
         lastError = new Error(`HTTP 429`);
         if (attempt < maxRetries) {
           await sleep(dsGlobalPause.backoffMs);
+          await waitForDsToken();
           continue;
         }
       } else if (resp.status >= 500) {
         lastError = new Error(`HTTP ${resp.status}`);
         if (attempt < maxRetries) {
           await sleep(Math.min(1000 * Math.pow(2, attempt), 8000));
+          await waitForDsToken();
           continue;
         }
       }
       throw new Error(`DexScreener returned ${resp.status}`);
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      if (attempt < maxRetries) {
-        await sleep(Math.min(1000 * Math.pow(2, attempt), 8000));
+      if (err instanceof TypeError) {
+        on429();
+        lastError = new Error('DexScreener CORS/网络错误 (视为 429)');
+        if (attempt < maxRetries) {
+          await sleep(dsGlobalPause.backoffMs);
+          await waitForDsToken();
+          continue;
+        }
+      } else {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < maxRetries) {
+          await sleep(Math.min(1000 * Math.pow(2, attempt), 8000));
+          await waitForDsToken();
+        }
       }
     }
   }

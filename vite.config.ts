@@ -1,6 +1,7 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv, type Plugin } from 'vite'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { isAllowedCexPath } from './src/services/stocks/proxyValidation.js'
 
 async function proxyFetch(
   upstream: string,
@@ -108,13 +109,6 @@ const CEX_ROUTES: Record<string, { primary: string; fallback?: string }> = {
   bybit: { primary: 'https://api.bybit.com', fallback: 'https://api.bytick.com' },
 }
 
-const CEX_PATH_WHITELIST: Record<string, RegExp> = {
-  binance: /^\/fapi\/v1\/(exchangeInfo|premiumIndex|ticker\/24hr|fundingInfo|fundingRate|klines)(\?|$)/,
-  okx: /^\/api\/v5\/(public|market)\/[a-zA-Z-]+(\?|$)/,
-  gate: /^\/api\/v4\/futures\/usdt\/(contracts|tickers|funding_rate)(\?|$)/,
-  bybit: /^\/v5\/market\/[a-zA-Z-]+(\/[a-zA-Z-]+)*(\?|$)/,
-}
-
 const responseCache = new Map<string, { data: string; contentType: string; time: number }>()
 const CACHE_SHORT_MS = 4_000
 const CACHE_LONG_PATTERNS = [/exchangeInfo/, /contracts$/, /instruments-info/]
@@ -196,19 +190,18 @@ function cexProxyPlugin(proxyUrl: string): Plugin {
         const route = CEX_ROUTES[exchange]
         if (!route) return next()
 
-        if (rawPath.includes('..') || rawPath.includes('%2e') || rawPath.includes('%2E') || rawPath.includes('\\')) {
+        const allowed = isAllowedCexPath(exchange, rawPath)
+        if (allowed === 'traversal') {
           res.writeHead(403, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: 'path_traversal_rejected' }))
           return
         }
-        const path = new URL(rawPath, 'http://localhost').pathname + (rawPath.includes('?') ? '?' + rawPath.split('?').slice(1).join('?') : '')
-
-        const whitelist = CEX_PATH_WHITELIST[exchange]
-        if (whitelist && !whitelist.test(path)) {
+        if (allowed === false) {
           res.writeHead(403, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ error: 'path_not_allowed' }))
           return
         }
+        const path = new URL(rawPath, 'http://localhost').pathname + (rawPath.includes('?') ? '?' + rawPath.split('?').slice(1).join('?') : '')
 
         const cacheKey = `${exchange}:${path}`
         const cached = responseCache.get(cacheKey)

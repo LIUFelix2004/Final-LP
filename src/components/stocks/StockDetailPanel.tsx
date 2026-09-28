@@ -140,6 +140,9 @@ export function StockDetailPanel({
                       较公允价 {formatSignedPercent(amountAnalysis.buyPremium)}
                     </span>
                   )}
+                  <span className="amount-impact">
+                    滑点 {formatSignedPercent(amountAnalysis.buyResult.priceImpact)}
+                  </span>
                   <span className="amount-pool">
                     {amountAnalysis.buyResult.quotedVia}
                     {row.mainPool && amountAnalysis.buyResult.pool.pairAddress !== row.mainPool.pairAddress && (
@@ -157,12 +160,25 @@ export function StockDetailPanel({
                       较公允价 {formatSignedPercent(amountAnalysis.sellPremium)}
                     </span>
                   )}
+                  <span className="amount-impact">
+                    滑点 {formatSignedPercent(amountAnalysis.sellResult.priceImpact)}
+                  </span>
                   <span className="amount-pool">
                     {amountAnalysis.sellResult.quotedVia}
                     {row.mainPool && amountAnalysis.sellResult.pool.pairAddress !== row.mainPool.pairAddress && (
                       <span className="amount-pool-note">（非主池）{amountAnalysis.sellResult.pool.pairAddress.slice(0, 10)}</span>
                     )}
                   </span>
+                </div>
+              )}
+              {amountAnalysis.buyResult && !amountAnalysis.sellResult && (
+                <div className="amount-row amount-fail">
+                  <span className="amount-label">卖出报价失败</span>
+                </div>
+              )}
+              {!amountAnalysis.buyResult && amountAnalysis.sellResult && (
+                <div className="amount-row amount-fail">
+                  <span className="amount-label">买入报价失败</span>
                 </div>
               )}
               {!amountAnalysis.buyResult && !amountAnalysis.sellResult && (

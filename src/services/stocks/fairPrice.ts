@@ -237,17 +237,19 @@ export function buildSignals(
     if (amountAnalysis.buyResult) {
       const pStr = amountAnalysis.buyPremium !== null ? `${amountAnalysis.buyPremium >= 0 ? '+' : ''}${(amountAnalysis.buyPremium * 100).toFixed(2)}%` : '';
       const via = amountAnalysis.buyResult.quotedVia;
+      const buyWarn = amountAnalysis.buyPremium !== null && amountAnalysis.buyPremium > 0.005;
       signals.push({
-        text: `链上买入 ${amt}：成交均价 $${amountAnalysis.buyResult.effectivePrice.toFixed(4)}，较公允价 ${pStr}（${via}）`,
-        color: amountAnalysis.buyPremium !== null && amountAnalysis.buyPremium > 0.005 ? 'red' : 'green',
+        text: `链上买入 ${amt}：成交均价 $${amountAnalysis.buyResult.effectivePrice.toFixed(4)}，较公允价 ${pStr}${buyWarn ? '，链上买入不划算' : ''}（${via}）`,
+        color: buyWarn ? 'red' : 'green',
       });
     }
     if (amountAnalysis.sellResult) {
       const pStr = amountAnalysis.sellPremium !== null ? `${amountAnalysis.sellPremium >= 0 ? '+' : ''}${(amountAnalysis.sellPremium * 100).toFixed(2)}%` : '';
       const via = amountAnalysis.sellResult.quotedVia;
+      const sellWarn = amountAnalysis.sellPremium !== null && amountAnalysis.sellPremium < -0.005;
       signals.push({
-        text: `链上卖出 ${amt}：成交均价 $${amountAnalysis.sellResult.effectivePrice.toFixed(4)}，较公允价 ${pStr}（${via}）`,
-        color: amountAnalysis.sellPremium !== null && amountAnalysis.sellPremium < -0.005 ? 'red' : 'green',
+        text: `链上卖出 ${amt}：成交均价 $${amountAnalysis.sellResult.effectivePrice.toFixed(4)}，较公允价 ${pStr}${sellWarn ? '，链上卖出不划算' : ''}（${via}）`,
+        color: sellWarn ? 'red' : 'green',
       });
     }
     if (!amountAnalysis.buyResult && !amountAnalysis.sellResult) {

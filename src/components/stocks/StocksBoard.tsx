@@ -29,9 +29,10 @@ export function StocksBoard({ onBack }: Props) {
     autoRefresh,
     setAutoRefresh,
     refresh,
-    addSymbol,
+    discoverAndAddSymbol,
     removeSymbol,
     registry,
+    userAddedSymbols,
   } = useStocksBoard();
 
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(() => {
@@ -108,7 +109,7 @@ export function StocksBoard({ onBack }: Props) {
           <div className="stocks-left-actions">
             <AddSymbolInput
               registry={registry}
-              onAdded={(token) => { addSymbol(token.symbol); refresh(); }}
+              onAdded={(token) => { discoverAndAddSymbol(token); }}
             />
             <RegisterToken onRegistered={() => refresh()} />
           </div>
@@ -119,6 +120,7 @@ export function StocksBoard({ onBack }: Props) {
             selectedSymbol={selectedSymbol}
             onSelect={handleSelect}
             onRemove={(row) => removeSymbol(row.symbol, row.address)}
+            userAddedSymbols={userAddedSymbols}
           />
         </div>
         <div className="stocks-right">

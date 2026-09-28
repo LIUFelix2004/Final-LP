@@ -22,7 +22,7 @@ export function AddSymbolInput({ registry, onAdded }: Props) {
     const found = searchRegistryBySymbol(registry, q);
     if (found) {
       setStatus('ok');
-      setMessage(`${found.symbol} 已在列表中`);
+      setMessage(`${found.symbol} 已添加`);
       onAdded(found);
       setValue('');
       setTimeout(() => { setStatus('idle'); setMessage(''); }, 1500);

@@ -43,17 +43,16 @@ const V4_QUOTE_ABI = [
     ]}],
     name: 'quoteExactInputSingle',
     outputs: [
-      { name: 'deltaAmounts', type: 'int128[]' },
-      { name: 'sqrtPriceX96After', type: 'uint160' },
-      { name: 'initializedTicksCrossed', type: 'uint32' },
+      { name: 'amountOut', type: 'uint256' },
+      { name: 'gasEstimate', type: 'uint256' },
     ],
     stateMutability: 'nonpayable',
     type: 'function',
   },
 ] as const;
 
-const INITIALIZE_EVENT = parseAbiItem(
-  'event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96)'
+export const INITIALIZE_EVENT = parseAbiItem(
+  'event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)'
 );
 
 const robinhoodChain = {
@@ -93,103 +92,125 @@ export interface V4PoolKey {
   hooks: Address;
 }
 
-const V4_POOLKEY_CACHE_KEY = 'stocks-v4-poolkeys-v1';
+const V4_POOLKEY_CACHE_KEY = 'stocks-v4-poolkeys-v2';
 const V4_POOLKEY_CACHE_TTL_MS = 3600_000;
+const V4_MAX_CONCURRENCY = 3;
 
-let v4PoolKeyMap: Map<string, V4PoolKey> | null = null;
-let v4PoolKeyFetchPromise: Promise<Map<string, V4PoolKey>> | null = null;
-
-interface V4CacheData {
-  entries: Array<{ poolId: string; currency0: string; currency1: string; fee: number; tickSpacing: number; hooks: string }>;
+interface V4CacheEntry {
+  currency0: string;
+  currency1: string;
+  fee: number;
+  tickSpacing: number;
+  hooks: string;
   timestamp: number;
 }
 
-function loadV4PoolKeyCache(): Map<string, V4PoolKey> | null {
+function loadV4PoolKeyCacheForPool(poolId: string): V4PoolKey | null {
   try {
     const raw = localStorage.getItem(V4_POOLKEY_CACHE_KEY);
     if (!raw) return null;
-    const data: V4CacheData = JSON.parse(raw);
-    if (Date.now() - data.timestamp > V4_POOLKEY_CACHE_TTL_MS) return null;
-    const map = new Map<string, V4PoolKey>();
-    for (const e of data.entries) {
-      map.set(e.poolId.toLowerCase(), {
-        currency0: e.currency0 as Address,
-        currency1: e.currency1 as Address,
-        fee: e.fee,
-        tickSpacing: e.tickSpacing,
-        hooks: e.hooks as Address,
-      });
-    }
-    return map;
+    const data: Record<string, V4CacheEntry> = JSON.parse(raw);
+    const entry = data[poolId.toLowerCase()];
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > V4_POOLKEY_CACHE_TTL_MS) return null;
+    return {
+      currency0: entry.currency0 as Address,
+      currency1: entry.currency1 as Address,
+      fee: entry.fee,
+      tickSpacing: entry.tickSpacing,
+      hooks: entry.hooks as Address,
+    };
   } catch {
     return null;
   }
 }
 
-function saveV4PoolKeyCache(map: Map<string, V4PoolKey>): void {
+function saveV4PoolKeyToCache(poolId: string, key: V4PoolKey): void {
   try {
-    const entries = [...map.entries()].map(([poolId, k]) => ({
-      poolId,
-      currency0: k.currency0,
-      currency1: k.currency1,
-      fee: k.fee,
-      tickSpacing: k.tickSpacing,
-      hooks: k.hooks,
-    }));
-    localStorage.setItem(V4_POOLKEY_CACHE_KEY, JSON.stringify({ entries, timestamp: Date.now() }));
+    const raw = localStorage.getItem(V4_POOLKEY_CACHE_KEY);
+    const data: Record<string, V4CacheEntry> = raw ? JSON.parse(raw) : {};
+    data[poolId.toLowerCase()] = {
+      currency0: key.currency0,
+      currency1: key.currency1,
+      fee: key.fee,
+      tickSpacing: key.tickSpacing,
+      hooks: key.hooks,
+      timestamp: Date.now(),
+    };
+    localStorage.setItem(V4_POOLKEY_CACHE_KEY, JSON.stringify(data));
   } catch {}
 }
 
-export async function fetchV4PoolKeys(): Promise<Map<string, V4PoolKey>> {
-  if (v4PoolKeyMap) return v4PoolKeyMap;
+async function fetchV4PoolKeyForPool(poolId: string): Promise<V4PoolKey | null> {
+  const cached = loadV4PoolKeyCacheForPool(poolId);
+  if (cached) return cached;
 
-  const cached = loadV4PoolKeyCache();
-  if (cached) {
-    v4PoolKeyMap = cached;
-    return cached;
+  const client = getClient();
+  const logs = await client.getLogs({
+    address: V4_POOL_MANAGER_ROBINHOOD as Address,
+    event: INITIALIZE_EVENT,
+    args: { id: poolId as Hex },
+    fromBlock: 0n,
+  });
+
+  if (logs.length === 0) return null;
+
+  const log = logs[0];
+  const args = log.args;
+  if (!args.id || !args.currency0 || !args.currency1) return null;
+
+  const key: V4PoolKey = {
+    currency0: args.currency0,
+    currency1: args.currency1,
+    fee: args.fee ?? 0,
+    tickSpacing: args.tickSpacing ?? 0,
+    hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
+  };
+
+  saveV4PoolKeyToCache(poolId, key);
+  return key;
+}
+
+export async function fetchV4PoolKeys(poolIds: string[]): Promise<Map<string, V4PoolKey>> {
+  const map = new Map<string, V4PoolKey>();
+  const toFetch: string[] = [];
+
+  for (const pid of poolIds) {
+    const cached = loadV4PoolKeyCacheForPool(pid);
+    if (cached) {
+      map.set(pid.toLowerCase(), cached);
+    } else {
+      toFetch.push(pid);
+    }
   }
 
-  if (v4PoolKeyFetchPromise) return v4PoolKeyFetchPromise;
+  const queue = [...toFetch];
+  const results: Array<{ poolId: string; key: V4PoolKey | null }> = [];
 
-  v4PoolKeyFetchPromise = (async () => {
-    const client = getClient();
-    const usdgAddr = USDG_ADDRESS.toLowerCase() as Address;
-
-    const [logs0, logs1] = await Promise.all([
-      client.getLogs({
-        address: V4_POOL_MANAGER_ROBINHOOD as Address,
-        event: INITIALIZE_EVENT,
-        args: { currency0: usdgAddr },
-        fromBlock: 0n,
-      }),
-      client.getLogs({
-        address: V4_POOL_MANAGER_ROBINHOOD as Address,
-        event: INITIALIZE_EVENT,
-        args: { currency1: usdgAddr },
-        fromBlock: 0n,
-      }),
-    ]);
-
-    const map = new Map<string, V4PoolKey>();
-    for (const log of [...logs0, ...logs1]) {
-      const args = log.args;
-      if (!args.id || !args.currency0 || !args.currency1) continue;
-      map.set(args.id.toLowerCase(), {
-        currency0: args.currency0,
-        currency1: args.currency1,
-        fee: args.fee ?? 0,
-        tickSpacing: args.tickSpacing ?? 0,
-        hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
-      });
+  async function worker() {
+    while (queue.length > 0) {
+      const poolId = queue.shift()!;
+      try {
+        const key = await fetchV4PoolKeyForPool(poolId);
+        results.push({ poolId, key });
+      } catch {
+        results.push({ poolId, key: null });
+      }
     }
+  }
 
-    saveV4PoolKeyCache(map);
-    v4PoolKeyMap = map;
-    v4PoolKeyFetchPromise = null;
-    return map;
-  })();
+  const workers: Promise<void>[] = [];
+  const workerCount = Math.min(V4_MAX_CONCURRENCY, toFetch.length);
+  for (let i = 0; i < workerCount; i++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
 
-  return v4PoolKeyFetchPromise;
+  for (const { poolId, key } of results) {
+    if (key) map.set(poolId.toLowerCase(), key);
+  }
+
+  return map;
 }
 
 function feeToUint24(feeRate: number): number {
@@ -335,17 +356,16 @@ export async function quoteV4Pool(
       data: result.data,
     });
 
-    const deltaAmounts = decoded[0] as bigint[];
-    const rawOut = zeroForOne ? -deltaAmounts[1] : -deltaAmounts[0];
-    if (rawOut <= 0n) return null;
+    const amountOut = decoded[0] as bigint;
+    if (amountOut <= 0n) return null;
 
     let effectivePrice: number;
     if (direction === 'buy') {
-      const tokensOut = Number(rawOut) / 10 ** STOCK_TOKEN_DECIMALS;
+      const tokensOut = Number(amountOut) / 10 ** STOCK_TOKEN_DECIMALS;
       if (tokensOut === 0) return null;
       effectivePrice = amountUsdg / tokensOut;
     } else {
-      const usdgOut = Number(rawOut) / 10 ** USDG_DECIMALS;
+      const usdgOut = Number(amountOut) / 10 ** USDG_DECIMALS;
       effectivePrice = usdgOut / (Number(amountIn) / 10 ** STOCK_TOKEN_DECIMALS);
     }
 
@@ -360,7 +380,7 @@ export async function quoteV4Pool(
       pool,
       direction,
       amountIn,
-      amountOut: rawOut,
+      amountOut,
       effectivePrice,
       priceImpact: direction === 'buy' ? priceImpact : -priceImpact,
       quotedVia: `Uniswap V4 ${feeLabel}`,
@@ -384,7 +404,7 @@ export async function quoteBestPool(
   let v4KeyMap: Map<string, V4PoolKey> | null = null;
   if (v4Pools.length > 0) {
     try {
-      v4KeyMap = await fetchV4PoolKeys();
+      v4KeyMap = await fetchV4PoolKeys(v4Pools.map(p => p.pairAddress));
     } catch {
       v4KeyMap = null;
     }
@@ -430,10 +450,13 @@ export async function analyzeAmount(
   amountUsdg: number,
   fairPrice: number | null,
 ): Promise<AmountAnalysis> {
-  const [buyResult, sellResult] = await Promise.all([
+  let [buyResult, sellResult] = await Promise.all([
     quoteBestPool(pools, amountUsdg, 'buy'),
     quoteBestPool(pools, amountUsdg, 'sell'),
   ]);
+
+  if (!buyResult) buyResult = await quoteBestPool(pools, amountUsdg, 'buy');
+  if (!sellResult) sellResult = await quoteBestPool(pools, amountUsdg, 'sell');
 
   const midPrice = fairPrice;
 

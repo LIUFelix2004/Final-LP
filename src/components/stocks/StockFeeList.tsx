@@ -9,6 +9,7 @@ interface Props {
   selectedSymbol: string | null;
   onSelect: (row: StockFeeRow) => void;
   onRemove?: (row: StockFeeRow) => void;
+  userAddedSymbols?: Set<string>;
 }
 
 function getFeeValue(row: StockFeeRow, window: StockSortWindow): number | null {
@@ -33,7 +34,7 @@ function formatFeeUsd(value: number | null): string {
   return `$${value.toFixed(0)}`;
 }
 
-export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSelect, onRemove }: Props) {
+export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSelect, onRemove, userAddedSymbols }: Props) {
   if (loading && rows.length === 0) {
     return (
       <div className="stocks-list-loading">
@@ -70,7 +71,7 @@ export function StockFeeList({ rows, loading, sortWindow, selectedSymbol, onSele
             <span className="col-symbol">
               <span className="stock-sym">
                 {row.symbol}
-                {onRemove && (
+                {onRemove && userAddedSymbols?.has(row.symbol) && (
                   <button
                     className="stock-remove-btn"
                     onClick={e => { e.stopPropagation(); onRemove(row); }}

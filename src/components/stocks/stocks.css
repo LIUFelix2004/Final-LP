@@ -630,6 +630,15 @@
   color: var(--accent-orange);
   font-size: 10px;
 }
+.amount-impact {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+.amount-fail {
+  color: var(--accent-orange);
+  font-size: 12px;
+}
 
 .stocks-footer {
   padding: 4px 16px;

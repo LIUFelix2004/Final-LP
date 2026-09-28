@@ -1,5 +1,7 @@
+import { useState, useEffect } from 'react';
 import type { StockFeeRow, StockSortWindow } from '../../types/stocks';
 import { STOCK_SORT_LABELS } from '../../config/stocks';
+import { dsGlobalPause } from '../../services/stocks/pools';
 
 interface Props {
   onBack: () => void;
@@ -46,6 +48,15 @@ export function StockTopBar({
   amountUsdg,
   onAmountChange,
 }: Props) {
+  const [dsPauseRemain, setDsPauseRemain] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const remain = Math.max(0, Math.ceil((dsGlobalPause.until - Date.now()) / 1000));
+      setDsPauseRemain(remain);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const sortedByH24 = [...rows].sort((a, b) => (b.fee.h24 ?? -1) - (a.fee.h24 ?? -1));
   return (
     <div className="stocks-topbar">
@@ -108,6 +119,11 @@ export function StockTopBar({
           {loading ? '...' : '刷新'}
         </button>
       </div>
+      {dsPauseRemain > 0 && (
+        <div className="stocks-error-bar">
+          DexScreener 限流，暂停 {dsPauseRemain}s
+        </div>
+      )}
       {errors.length > 0 && (
         <div className="stocks-error-bar">
           {errors[errors.length - 1]}

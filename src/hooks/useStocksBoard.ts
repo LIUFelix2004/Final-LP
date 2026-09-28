@@ -246,6 +246,13 @@ export function useStocksBoard() {
     try { localStorage.setItem('stocks-sort-window-v1', sortWindow); } catch {}
   }, [sortWindow]);
 
+  useEffect(() => {
+    if (poolsRef.current.size > 0 && registry.length > 0) {
+      const rows = buildRows(registry, poolsRef.current);
+      setFeeRows(rows);
+    }
+  }, [userAddedSymbols]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const addSymbol = useCallback((symbol: string) => {
     setUserAddedSymbols(prev => {
       const next = new Set(prev).add(symbol.toUpperCase());
@@ -253,6 +260,26 @@ export function useStocksBoard() {
       return next;
     });
   }, []);
+
+  const discoverAndAddSymbol = useCallback(async (token: StockToken) => {
+    addSymbol(token.symbol);
+
+    const addr = token.address.toLowerCase();
+    const existing = poolsRef.current.get(addr);
+    if (existing && existing.length > 0) return;
+
+    try {
+      const pools = await discoverPoolsForToken(token);
+      const enriched = pools.length > 0 ? await enrichStockPoolFees(pools) : [];
+      poolsRef.current.set(addr, enriched);
+
+      const poolCache = loadPoolCache();
+      poolCache.set(addr, { tokenAddress: token.address, pools: enriched, timestamp: Date.now() });
+      savePoolCache(poolCache);
+
+      setFeeRows(buildRows(registry, poolsRef.current));
+    } catch {}
+  }, [addSymbol, registry, buildRows]);
 
   const removeSymbol = useCallback((symbol: string, address: string) => {
     removeUserToken(address);
@@ -314,7 +341,9 @@ export function useStocksBoard() {
     setAutoRefresh,
     refresh,
     addSymbol,
+    discoverAndAddSymbol,
     removeSymbol,
     registry,
+    userAddedSymbols,
   };
 }
