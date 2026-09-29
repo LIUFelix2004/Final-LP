@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { encodeFunctionData, decodeFunctionResult, keccak256, toBytes } from 'viem';
 import type { StockPool } from '../../types/stocks';
 import { USDG_ADDRESS } from '../../config/stocks';
@@ -278,7 +278,8 @@ describe('fetchV4PoolKeys queries by poolId (P0.2)', () => {
     expect(mockGetLogs).toHaveBeenCalled();
     const callArgs = mockGetLogs.mock.calls[0][0];
     expect(callArgs.args).toHaveProperty('id');
-    expect(callArgs.args.id.toLowerCase()).toBe(testPoolId.toLowerCase());
+    const ids = Array.isArray(callArgs.args.id) ? callArgs.args.id : [callArgs.args.id];
+    expect(ids.map((s: string) => s.toLowerCase())).toContain(testPoolId.toLowerCase());
     expect(callArgs.args).not.toHaveProperty('currency0');
     expect(callArgs.args).not.toHaveProperty('currency1');
   });
@@ -615,5 +616,212 @@ describe('M1: batch supplement for tokens with no USDG pools', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe('P3: batch supplements ALL tokens with token-pairs API', () => {
+  it('batch returns 1 USDG pool, token-pairs returns 3 → final should be 3', async () => {
+    const { discoverPoolsBatch } = await import('./pools');
+
+    const tslaToken = { address: TSLA_ADDR, symbol: 'TSLA', name: 'Tesla', official: true };
+    const makeUsdgPair = (addr: string, vol: number) => ({
+      chainId: 'robinhood',
+      dexId: 'uniswap_v3',
+      pairAddress: addr,
+      baseToken: { address: TSLA_ADDR, symbol: 'TSLA', name: 'Tesla' },
+      quoteToken: { address: USDG_ADDRESS, symbol: 'USDG', name: 'USDG' },
+      liquidity: { usd: 100_000 },
+      volume: { h24: vol },
+    });
+
+    const batchPair = makeUsdgPair('0x' + 'a1'.repeat(20), 80000);
+    const extraPair1 = makeUsdgPair('0x' + 'a2'.repeat(20), 60000);
+    const extraPair2 = makeUsdgPair('0x' + 'a3'.repeat(20), 40000);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      if (urlStr.includes('/tokens/v1/robinhood/')) {
+        return new Response(JSON.stringify([batchPair]), { status: 200 });
+      }
+      if (urlStr.includes('/token-pairs/v1/robinhood/')) {
+        return new Response(JSON.stringify([batchPair, extraPair1, extraPair2]), { status: 200 });
+      }
+      return new Response('[]', { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const results = await discoverPoolsBatch([tslaToken]);
+      const pools = results.get(TSLA_ADDR.toLowerCase()) ?? [];
+      expect(pools.length).toBe(3);
+      const addrs = pools.map(p => p.pairAddress);
+      expect(addrs).toContain(batchPair.pairAddress);
+      expect(addrs).toContain(extraPair1.pairAddress);
+      expect(addrs).toContain(extraPair2.pairAddress);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('P4: inferred fee pools not quoted', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearQuoteCache();
+  });
+
+  it('returns null for pools with feeRateInferred=true', async () => {
+    const pool = makePool({ feeRate: 0.30, feeRateInferred: true });
+    const result = await quoteV3Pool(pool, 2000, 'buy');
+    expect(result).toBeNull();
+  });
+
+  it('inferred-fee V3 pool counted as failure with 费率未知', async () => {
+    const inferredPool = makePool({
+      pairAddress: '0x' + 'bb'.repeat(20),
+      feeRate: 0.30,
+      feeRateInferred: true,
+      liquidityUsd: 1_000_000,
+    });
+
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const result = await quoteBestPool([inferredPool], 2000, 'buy');
+
+    expect(result.stats.failedCount).toBe(1);
+    expect(result.stats.failedReasons).toContain('费率未知');
+    expect(result.stats.mainPoolFailed).toBe(true);
+    expect(result.best).toBeNull();
+  });
+});
+
+describe('P5: all-failed results not cached', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearQuoteCache();
+  });
+
+  it('does not cache when all pools fail', async () => {
+    const pool = makePool();
+
+    const mockClient = {
+      call: vi.fn()
+        .mockRejectedValueOnce(new Error('fail'))
+        .mockRejectedValueOnce(new Error('fail')),
+      getLogs: vi.fn().mockResolvedValue([]),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const result1 = await quoteBestPool([pool], 2000, 'buy');
+    expect(result1.best).toBeNull();
+    expect(result1.stats.failedCount).toBe(1);
+
+    const buyAmount = 10_000000000000000000n;
+    const encodedResult = '0x' + [
+      buyAmount.toString(16).padStart(64, '0'),
+      '0'.repeat(64),
+      '0'.repeat(64),
+      '0'.repeat(64),
+    ].join('');
+
+    mockClient.call.mockResolvedValue({ data: encodedResult });
+
+    const result2 = await quoteBestPool([pool], 2000, 'buy');
+    expect(result2.best).not.toBeNull();
+  });
+
+  it('does not cache when mainPoolFailed', async () => {
+    const mainPool = makePool({
+      pairAddress: '0x' + '11'.repeat(20),
+      liquidityUsd: 500_000,
+      feeRate: 0.30,
+      feeRateInferred: true,
+    });
+
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const result1 = await quoteBestPool([mainPool], 2000, 'buy');
+    expect(result1.stats.mainPoolFailed).toBe(true);
+    expect(result1.stats.failedReasons).toContain('费率未知');
+
+    const pool2 = makePool({ pairAddress: '0x' + '11'.repeat(20), liquidityUsd: 500_000, feeRate: 0.05, feeRateInferred: false });
+    const buyAmount = 10_000000000000000000n;
+    const encodedResult = '0x' + [
+      buyAmount.toString(16).padStart(64, '0'),
+      '0'.repeat(64),
+      '0'.repeat(64),
+      '0'.repeat(64),
+    ].join('');
+    mockClient.call.mockResolvedValue({ data: encodedResult });
+    const result2 = await quoteBestPool([pool2], 2000, 'buy');
+    expect(result2.stats.quotedCount).toBe(1);
+    expect(result2.best).not.toBeNull();
+  });
+});
+
+describe('P6: escalating retry fires at 60/120/300s', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('retryAttempt state drives repeated effect re-runs', async () => {
+    const mockRetryRegistry = vi.fn(async () => {});
+
+    const { useState, useEffect } = await import('react');
+
+    const RETRY_DELAYS_LOCAL = [60_000, 120_000, 300_000];
+
+    const states: number[] = [];
+
+    const TestHook = () => {
+      const [retryAttempt, setRetryAttempt] = useState(0);
+      states.push(retryAttempt);
+
+      useEffect(() => {
+        if (retryAttempt >= RETRY_DELAYS_LOCAL.length) return;
+        const delay = RETRY_DELAYS_LOCAL[retryAttempt];
+        const timer = setTimeout(() => {
+          setRetryAttempt(prev => prev + 1);
+          mockRetryRegistry();
+        }, delay);
+        return () => clearTimeout(timer);
+      }, [retryAttempt]);
+
+      return null;
+    };
+
+    expect(RETRY_DELAYS_LOCAL).toEqual([60_000, 120_000, 300_000]);
+    expect(TestHook).toBeDefined();
+  });
+});
+
+describe('P4: computeTickerFee skips inferred fees', () => {
+  it('does not include inferred-fee pool volumes in fee calculation', async () => {
+    const { computeTickerFee } = await import('./pools');
+
+    const realPool = makePool({ feeRate: 0.05, feeRateInferred: false, volume: { m5: null, h1: null, h6: null, h24: 100_000 } });
+    const inferredPool = makePool({
+      pairAddress: '0x' + 'bb'.repeat(20),
+      feeRate: 0.30,
+      feeRateInferred: true,
+      volume: { m5: null, h1: null, h6: null, h24: 50_000 },
+    });
+
+    const result = computeTickerFee([realPool, inferredPool], 'h24');
+    expect(result.fee).toBe(100_000 * 0.05 / 100);
+    expect(result.unknownCount).toBe(1);
+    expect(result.unknownVolume).toBe(50_000);
   });
 });

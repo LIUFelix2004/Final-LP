@@ -1,12 +1,62 @@
 import { createPublicClient, http, encodeFunctionData, decodeFunctionResult, parseAbiItem, type Address, type Hex } from 'viem';
 import type { StockPool } from '../../types/stocks';
-import { USDG_ADDRESS, USDG_DECIMALS, V3_QUOTER_V2, V4_QUOTER, V4_POOL_MANAGER_ROBINHOOD, ROBINHOOD_CHAIN_ID } from '../../config/stocks';
+import { USDG_ADDRESS, USDG_DECIMALS, V3_QUOTER_V2, V4_QUOTER, V4_POOL_MANAGER_ROBINHOOD, V4_POOL_MANAGER_DEPLOY_BLOCK, ROBINHOOD_CHAIN_ID } from '../../config/stocks';
 import { CHAINS } from '../../config/chains';
 import v4SnapshotJson from '../../config/v4-poolkeys.json';
 
 const STOCK_TOKEN_DECIMALS = 18;
 const SANITY_THRESHOLD = 0.10;
 const V4_KEY_SEGMENT_SIZE = 10_000_000n;
+
+const RPC_MAX_CONCURRENCY = 4;
+let rpcInFlight = 0;
+const rpcWaiters: Array<() => void> = [];
+
+function is429(err: unknown): boolean {
+  const msg = String(err);
+  return msg.includes('429') || msg.includes('Too Many') || msg.includes('Failed to fetch') || msg.includes('CORS');
+}
+
+export async function rpcThrottled<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  while (rpcInFlight >= RPC_MAX_CONCURRENCY) {
+    await new Promise<void>(resolve => rpcWaiters.push(resolve));
+  }
+  rpcInFlight++;
+  try {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (is429(err) && attempt < retries) {
+          await new Promise(r => setTimeout(r, 1000 * 2 ** attempt));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error('rpc retries exhausted');
+  } finally {
+    rpcInFlight--;
+    if (rpcWaiters.length > 0) {
+      rpcWaiters.shift()!();
+    }
+  }
+}
+
+const negativeCache = new Map<string, number>();
+const NEGATIVE_CACHE_TTL = 5 * 60 * 1000;
+
+function isNegativelyCached(poolId: string): boolean {
+  const ts = negativeCache.get(poolId.toLowerCase());
+  if (!ts) return false;
+  if (Date.now() - ts > NEGATIVE_CACHE_TTL) {
+    negativeCache.delete(poolId.toLowerCase());
+    return false;
+  }
+  return true;
+}
+
+const v4InFlightQueries = new Map<string, Promise<V4PoolKey | null>>();
 
 const V3_QUOTE_ABI = [
   {
@@ -108,8 +158,6 @@ export interface V4PoolKey {
 }
 
 const V4_POOLKEY_CACHE_KEY = 'stocks-v4-poolkeys-v2';
-const V4_MAX_CONCURRENCY = 3;
-
 interface V4CacheEntry {
   currency0: string;
   currency1: string;
@@ -142,6 +190,7 @@ function loadV4Snapshot(): Map<string, V4PoolKey> {
 }
 
 const v4SnapshotKeys = loadV4Snapshot();
+const v4SnapshotBlock = BigInt((v4SnapshotJson as { snapshotBlock: number }).snapshotBlock || 0);
 
 function loadV4PoolKeyCacheForPool(poolId: string): V4PoolKey | null {
   const snapKey = v4SnapshotKeys.get(poolId.toLowerCase());
@@ -184,73 +233,84 @@ function saveV4PoolKeyToCache(poolId: string, key: V4PoolKey): void {
 async function fetchV4PoolKeyForPool(poolId: string): Promise<V4PoolKey | null> {
   const cached = loadV4PoolKeyCacheForPool(poolId);
   if (cached) return cached;
+  if (isNegativelyCached(poolId)) return null;
 
-  const client = getClient();
-  const currentBlock = await client.getBlockNumber();
+  const existing = v4InFlightQueries.get(poolId.toLowerCase());
+  if (existing) return existing;
 
-  // Segmented getLogs with PoolManager address filter — 10M block limit
-  let cursor = 0n;
-  while (cursor <= currentBlock) {
-    const end = cursor + V4_KEY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + V4_KEY_SEGMENT_SIZE - 1n;
-    try {
-      const logs = await client.getLogs({
-        address: V4_POOL_MANAGER_ROBINHOOD as Address,
-        event: INITIALIZE_EVENT,
-        args: { id: poolId as Hex },
-        fromBlock: cursor,
-        toBlock: end,
-      });
+  const promise = (async (): Promise<V4PoolKey | null> => {
+    const client = getClient();
+    const currentBlock = await client.getBlockNumber();
+    const fromBlock = v4SnapshotBlock > 0n ? v4SnapshotBlock : V4_POOL_MANAGER_DEPLOY_BLOCK;
 
-      if (logs.length > 0) {
-        const log = logs[0];
-        const args = log.args;
-        if (!args.id || !args.currency0 || !args.currency1) return null;
-
-        const key: V4PoolKey = {
-          currency0: args.currency0,
-          currency1: args.currency1,
-          fee: args.fee ?? 0,
-          tickSpacing: args.tickSpacing ?? 0,
-          hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
-        };
-
-        saveV4PoolKeyToCache(poolId, key);
-        return key;
-      }
-    } catch (err) {
-      if (isBlockRangeError(err) && (end - cursor) > 1_000_000n) {
-        // Reduce segment size for this query — shouldn't happen with 10M but be safe
-        const mid = cursor + (end - cursor) / 2n;
-        const logs1 = await client.getLogs({
+    let cursor = fromBlock;
+    while (cursor <= currentBlock) {
+      const end = cursor + V4_KEY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + V4_KEY_SEGMENT_SIZE - 1n;
+      try {
+        const logs = await rpcThrottled(() => client.getLogs({
           address: V4_POOL_MANAGER_ROBINHOOD as Address,
           event: INITIALIZE_EVENT,
           args: { id: poolId as Hex },
           fromBlock: cursor,
-          toBlock: mid,
-        });
-        if (logs1.length > 0) {
-          const args = logs1[0].args;
-          if (args.id && args.currency0 && args.currency1) {
-            const key: V4PoolKey = {
-              currency0: args.currency0,
-              currency1: args.currency1,
-              fee: args.fee ?? 0,
-              tickSpacing: args.tickSpacing ?? 0,
-              hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
-            };
-            saveV4PoolKeyToCache(poolId, key);
-            return key;
-          }
-        }
-        cursor = mid + 1n;
-        continue;
-      }
-      throw err;
-    }
-    cursor = end + 1n;
-  }
+          toBlock: end,
+        }));
 
-  return null;
+        if (logs.length > 0) {
+          const args = logs[0].args;
+          if (!args.id || !args.currency0 || !args.currency1) return null;
+
+          const key: V4PoolKey = {
+            currency0: args.currency0,
+            currency1: args.currency1,
+            fee: args.fee ?? 0,
+            tickSpacing: args.tickSpacing ?? 0,
+            hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
+          };
+          saveV4PoolKeyToCache(poolId, key);
+          return key;
+        }
+      } catch (err) {
+        if (isBlockRangeError(err) && (end - cursor) > 1_000_000n) {
+          const mid = cursor + (end - cursor) / 2n;
+          const logs1 = await rpcThrottled(() => client.getLogs({
+            address: V4_POOL_MANAGER_ROBINHOOD as Address,
+            event: INITIALIZE_EVENT,
+            args: { id: poolId as Hex },
+            fromBlock: cursor,
+            toBlock: mid,
+          }));
+          if (logs1.length > 0) {
+            const args = logs1[0].args;
+            if (args.id && args.currency0 && args.currency1) {
+              const key: V4PoolKey = {
+                currency0: args.currency0,
+                currency1: args.currency1,
+                fee: args.fee ?? 0,
+                tickSpacing: args.tickSpacing ?? 0,
+                hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
+              };
+              saveV4PoolKeyToCache(poolId, key);
+              return key;
+            }
+          }
+          cursor = mid + 1n;
+          continue;
+        }
+        throw err;
+      }
+      cursor = end + 1n;
+    }
+
+    negativeCache.set(poolId.toLowerCase(), Date.now());
+    return null;
+  })();
+
+  v4InFlightQueries.set(poolId.toLowerCase(), promise);
+  try {
+    return await promise;
+  } finally {
+    v4InFlightQueries.delete(poolId.toLowerCase());
+  }
 }
 
 export async function fetchV4PoolKeys(poolIds: string[]): Promise<Map<string, V4PoolKey>> {
@@ -261,35 +321,70 @@ export async function fetchV4PoolKeys(poolIds: string[]): Promise<Map<string, V4
     const cached = loadV4PoolKeyCacheForPool(pid);
     if (cached) {
       map.set(pid.toLowerCase(), cached);
-    } else {
+    } else if (!isNegativelyCached(pid)) {
       toFetch.push(pid);
     }
   }
 
-  const queue = [...toFetch];
-  const results: Array<{ poolId: string; key: V4PoolKey | null }> = [];
+  if (toFetch.length === 0) return map;
 
-  async function worker() {
-    while (queue.length > 0) {
-      const poolId = queue.shift()!;
+  const client = getClient();
+  const currentBlock = await client.getBlockNumber();
+  const fromBlock = v4SnapshotBlock > 0n ? v4SnapshotBlock : V4_POOL_MANAGER_DEPLOY_BLOCK;
+
+  const BATCH_SIZE = 20;
+  for (let b = 0; b < toFetch.length; b += BATCH_SIZE) {
+    const batchIds = toFetch.slice(b, b + BATCH_SIZE);
+    let cursor = fromBlock;
+    while (cursor <= currentBlock) {
+      const end = cursor + V4_KEY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + V4_KEY_SEGMENT_SIZE - 1n;
       try {
-        const key = await fetchV4PoolKeyForPool(poolId);
-        results.push({ poolId, key });
-      } catch {
-        results.push({ poolId, key: null });
+        const logs = await rpcThrottled(() => client.getLogs({
+          address: V4_POOL_MANAGER_ROBINHOOD as Address,
+          event: INITIALIZE_EVENT,
+          args: { id: batchIds.map(id => id as Hex) },
+          fromBlock: cursor,
+          toBlock: end,
+        }));
+
+        for (const log of logs) {
+          const args = log.args;
+          if (!args.id || !args.currency0 || !args.currency1) continue;
+          const pid = args.id.toLowerCase();
+          if (map.has(pid)) continue;
+
+          const key: V4PoolKey = {
+            currency0: args.currency0,
+            currency1: args.currency1,
+            fee: args.fee ?? 0,
+            tickSpacing: args.tickSpacing ?? 0,
+            hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
+          };
+          map.set(pid, key);
+          saveV4PoolKeyToCache(pid, key);
+        }
+      } catch (err) {
+        if (isBlockRangeError(err)) {
+          for (const pid of batchIds) {
+            if (!map.has(pid.toLowerCase())) {
+              try {
+                const key = await fetchV4PoolKeyForPool(pid);
+                if (key) map.set(pid.toLowerCase(), key);
+              } catch { /* individual fallback failed */ }
+            }
+          }
+          break;
+        }
+        throw err;
       }
+      cursor = end + 1n;
     }
   }
 
-  const workers: Promise<void>[] = [];
-  const workerCount = Math.min(V4_MAX_CONCURRENCY, toFetch.length);
-  for (let i = 0; i < workerCount; i++) {
-    workers.push(worker());
-  }
-  await Promise.all(workers);
-
-  for (const { poolId, key } of results) {
-    if (key) map.set(poolId.toLowerCase(), key);
+  for (const pid of toFetch) {
+    if (!map.has(pid.toLowerCase())) {
+      negativeCache.set(pid.toLowerCase(), Date.now());
+    }
   }
 
   return map;
@@ -309,7 +404,7 @@ export async function quoteV3Pool(
   amountUsdg: number,
   direction: 'buy' | 'sell',
 ): Promise<AmountQuoteResult | null> {
-  if (pool.version !== 'V3' || pool.dex !== 'Uniswap' || pool.feeRate === null) return null;
+  if (pool.version !== 'V3' || pool.dex !== 'Uniswap' || pool.feeRate === null || pool.feeRateInferred) return null;
 
   const client = getClient();
   const fee = feeToUint24(pool.feeRate);
@@ -504,7 +599,8 @@ export async function quoteBestPool(
     return cached.result;
   }
 
-  const v3Pools = uniPools.filter(p => p.version === 'V3' && p.feeRate !== null);
+  const v3Pools = uniPools.filter(p => p.version === 'V3' && p.feeRate !== null && !p.feeRateInferred);
+  const v3FeeUnknown = uniPools.filter(p => p.version === 'V3' && (p.feeRate === null || p.feeRateInferred));
   const v4Pools = uniPools.filter(p => p.version === 'V4');
 
   const mainPool = uniPools.reduce((best, p) =>
@@ -520,8 +616,10 @@ export async function quoteBestPool(
     }
   }
 
-  // M3: Track keyless V4 pools as failures
-  const keylessV4Failures: Array<{ pool: StockPool; reason: string }> = [];
+  const preFailures: Array<{ pool: StockPool; reason: string }> = [];
+  for (const p of v3FeeUnknown) {
+    preFailures.push({ pool: p, reason: '费率未知' });
+  }
 
   const tasks: Array<{ pool: StockPool; quoteFn: () => Promise<AmountQuoteResult | null> }> = [
     ...v3Pools.map(p => ({ pool: p, quoteFn: () => quoteV3Pool(p, amountUsdg, direction) })),
@@ -532,11 +630,11 @@ export async function quoteBestPool(
     if (key) {
       tasks.push({ pool: p, quoteFn: () => quoteV4Pool(p, key, amountUsdg, direction) });
     } else {
-      keylessV4Failures.push({ pool: p, reason: '缺少 V4 key' });
+      preFailures.push({ pool: p, reason: '缺少 V4 key' });
     }
   }
 
-  const totalPools = tasks.length + keylessV4Failures.length;
+  const totalPools = tasks.length + preFailures.length;
   if (totalPools === 0) return { best: null, stats: emptyStats };
 
   let done = 0;
@@ -549,7 +647,7 @@ export async function quoteBestPool(
         const idx = queue.shift()!;
         firstResults[idx] = await tasks[idx].quoteFn();
         done++;
-        onProgress?.(done + keylessV4Failures.length, totalPools);
+        onProgress?.(done + preFailures.length, totalPools);
       }
     }
     const workerCount = Math.min(QUOTE_CONCURRENCY, tasks.length);
@@ -585,8 +683,7 @@ export async function quoteBestPool(
     }
   }
 
-  // Add keyless V4 pool failures
-  for (const { pool, reason } of keylessV4Failures) {
+  for (const { pool, reason } of preFailures) {
     failedCount++;
     failedPools.push(pool.pairAddress);
     failedReasons.push(reason);
@@ -599,9 +696,7 @@ export async function quoteBestPool(
   const stats: QuoteStats = { quotedCount, failedCount, failedPools, failedReasons, mainPoolFailed };
 
   if (valid.length === 0) {
-    const result: BestPoolResult = { best: null, stats };
-    quoteCache.set(cacheKey, { result, timestamp: Date.now() });
-    return result;
+    return { best: null, stats };
   }
 
   const best = direction === 'buy'
@@ -609,7 +704,9 @@ export async function quoteBestPool(
     : valid.reduce((b, r) => r.effectivePrice > b.effectivePrice ? r : b);
 
   const result: BestPoolResult = { best, stats };
-  quoteCache.set(cacheKey, { result, timestamp: Date.now() });
+  if (!stats.mainPoolFailed) {
+    quoteCache.set(cacheKey, { result, timestamp: Date.now() });
+  }
   return result;
 }
 

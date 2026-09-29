@@ -11,6 +11,29 @@ import { CHAINS } from '../../config/chains';
 import snapshotJson from '../../config/stock-registry.json';
 
 const REGISTRY_SEGMENT_SIZE = 30000n;
+const SCAN_PROGRESS_KEY = 'stocks-registry-scan-v1';
+
+interface ScanProgress {
+  lastBlock: number;
+  extraAddresses: string[];
+}
+
+function loadScanProgress(): ScanProgress | null {
+  try {
+    const raw = localStorage.getItem(SCAN_PROGRESS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
+function saveScanProgress(block: bigint, extraAddresses: string[]): void {
+  try {
+    localStorage.setItem(SCAN_PROGRESS_KEY, JSON.stringify({
+      lastBlock: Number(block),
+      extraAddresses,
+    }));
+  } catch {}
+}
 
 const ERC20_SYMBOL_ABI = [
   { inputs: [], name: 'symbol', outputs: [{ name: '', type: 'string' }], stateMutability: 'view', type: 'function' },
@@ -94,17 +117,23 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
   const client = getClient();
   const currentBlock = await client.getBlockNumber();
 
-  const fromBlock = snapshotBlock > 0n ? snapshotBlock : 0n;
   const addresses = new Set<string>();
 
-  // Load snapshot addresses first
-  if (snapshotBlock > 0n) {
-    for (const t of loadSnapshot()) {
-      addresses.add(t.address.toLowerCase());
+  for (const t of loadSnapshot()) {
+    addresses.add(t.address.toLowerCase());
+  }
+
+  const progress = loadScanProgress();
+  const progressBlock = progress ? BigInt(progress.lastBlock) : 0n;
+  if (progress) {
+    for (const addr of progress.extraAddresses) {
+      addresses.add(addr.toLowerCase());
     }
   }
 
-  // Segmented getLogs in REGISTRY_SEGMENT_SIZE chunks (no address filter → 30000 block limit)
+  const fromBlock = progressBlock > snapshotBlock ? progressBlock + 1n : (snapshotBlock > 0n ? snapshotBlock : 0n);
+  const snapshotAddrs = new Set(loadSnapshot().map(t => t.address.toLowerCase()));
+
   let cursor = fromBlock;
   while (cursor <= currentBlock) {
     const end = cursor + REGISTRY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + REGISTRY_SEGMENT_SIZE - 1n;
@@ -119,6 +148,9 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
     }
     cursor = end + 1n;
   }
+
+  const extraAddresses = [...addresses].filter(a => !snapshotAddrs.has(a));
+  saveScanProgress(currentBlock, extraAddresses);
 
   if (addresses.size === 0) return loadSnapshot();
 

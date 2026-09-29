@@ -172,20 +172,6 @@ function pairToStockPool(pair: DsPair, tokenAddress: string): StockPool | null {
   };
 }
 
-function countUsdgPools(pairs: DsPair[], tokenAddress: string): number {
-  let count = 0;
-  const tokenAddr = tokenAddress.toLowerCase();
-  const usdgAddr = USDG_ADDRESS.toLowerCase();
-  for (const pair of pairs) {
-    if (pair.chainId !== 'robinhood') continue;
-    const base = pair.baseToken.address.toLowerCase();
-    const quote = pair.quoteToken.address.toLowerCase();
-    if ((base === usdgAddr && quote === tokenAddr) || (quote === usdgAddr && base === tokenAddr)) {
-      count++;
-    }
-  }
-  return count;
-}
 
 export async function discoverPoolsForToken(
   token: StockToken,
@@ -243,8 +229,7 @@ export async function discoverPoolsBatch(
     const batch = tokens.slice(i, i + DS_BATCH_SIZE);
     const addresses = batch.map(t => t.address).join(',');
 
-    // Tokens that need individual follow-up (batch returned < 1 USDG pool)
-    const needsSupplement: StockToken[] = [];
+    const batchPoolMap = new Map<string, { pools: StockPool[]; seen: Set<string> }>();
 
     try {
       const resp = await fetchWithRetry(`${DEXSCREENER_BATCH_API}/${addresses}`);
@@ -252,11 +237,6 @@ export async function discoverPoolsBatch(
       const pairs: DsPair[] = await resp.json();
 
       for (const token of batch) {
-        const usdgCount = countUsdgPools(pairs, token.address);
-        if (usdgCount < 1) {
-          needsSupplement.push(token);
-          continue;
-        }
         const pools: StockPool[] = [];
         const seen = new Set<string>();
         for (const pair of pairs) {
@@ -266,20 +246,29 @@ export async function discoverPoolsBatch(
             pools.push(pool);
           }
         }
-        result.set(token.address.toLowerCase(), filterAndSortPools(pools));
+        batchPoolMap.set(token.address.toLowerCase(), { pools, seen });
       }
     } catch {
-      // Batch failed entirely — all tokens need individual discovery
-      needsSupplement.push(...batch.filter(t => !result.has(t.address.toLowerCase())));
+      // Batch failed — each token starts empty
     }
 
-    // Supplement tokens with < 1 USDG pool via individual token-pairs API
-    for (const token of needsSupplement) {
+    for (const token of batch) {
       if (signal?.aborted) break;
+      const addr = token.address.toLowerCase();
+      const existing = batchPoolMap.get(addr) ?? { pools: [], seen: new Set<string>() };
       try {
-        const pools = await discoverPoolsForToken(token, signal);
-        result.set(token.address.toLowerCase(), pools);
-      } catch { /* individual also failed */ }
+        const resp = await fetchWithRetry(`${DEXSCREENER_TOKEN_PAIRS}/${token.address}`);
+        if (signal?.aborted) break;
+        const pairs: DsPair[] = await resp.json();
+        for (const pair of pairs) {
+          const pool = pairToStockPool(pair, token.address);
+          if (pool && !existing.seen.has(pool.pairAddress)) {
+            existing.seen.add(pool.pairAddress);
+            existing.pools.push(pool);
+          }
+        }
+      } catch { /* supplement failed — keep batch results */ }
+      result.set(addr, filterAndSortPools(existing.pools));
     }
 
     onProgress?.(Math.min(i + DS_BATCH_SIZE, tokens.length), tokens.length);
@@ -324,7 +313,7 @@ export function computeTickerFee(
   for (const pool of pools) {
     const vol = pool.volume[window];
     if (vol === null || vol === 0) continue;
-    if (pool.feeRate !== null) {
+    if (pool.feeRate !== null && !pool.feeRateInferred) {
       total += vol * (pool.feeRate / 100);
       hasAny = true;
     } else {

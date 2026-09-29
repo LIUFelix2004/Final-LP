@@ -57,7 +57,7 @@ export function useStocksBoard() {
   const poolsRef = useRef<Map<string, StockPool[]>>(new Map());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const userAddedSymbolsRef = useRef(userAddedSymbols);
-  const retryAttemptRef = useRef(0);
+  const [retryAttempt, setRetryAttempt] = useState(0);
 
   // M4: keep ref in sync so buildRows always sees latest
   useEffect(() => {
@@ -211,6 +211,9 @@ export function useStocksBoard() {
           for (const [addr, pools] of poolsRef.current) {
             poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
           }
+          for (const [addr, entry] of poolCache) {
+            poolCache.set(addr, { ...entry, pools: entry.pools.map(p => enrichedMap.get(p.pairAddress) ?? p) });
+          }
         }
 
         savePoolCache(poolCache);
@@ -256,28 +259,41 @@ export function useStocksBoard() {
     }
   }, [userAddedSymbols]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // M5: retryRegistry discovers pools + rebuilds rows
   const retryRegistry = useCallback(async () => {
     setRetryLoading(true);
     try {
       const result = await enumerateOfficialTokens();
       if (!result.degraded) {
         setRegistryDegraded(false);
-        retryAttemptRef.current = 0;
+        setRetryAttempt(0);
         const userTokens = loadUserTokens();
         const merged = mergeRegistries(result.tokens, userTokens);
         setRegistry(merged);
         saveRegistryCache(result.tokens);
 
-        // Discover pools for any new tokens
         const newTokens = merged.filter(t => !poolsRef.current.has(t.address.toLowerCase()));
         if (newTokens.length > 0) {
           const batchResults = await discoverPoolsBatch(newTokens);
           const poolCache = loadPoolCache();
+
+          let allNeedFees: StockPool[] = [];
           for (const [addr, pools] of batchResults) {
             poolsRef.current.set(addr, pools);
+            allNeedFees.push(...pools.filter(p => p.feeRate === null));
             poolCache.set(addr, { tokenAddress: newTokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools, timestamp: Date.now() });
           }
+
+          if (allNeedFees.length > 0) {
+            const enriched = await enrichStockPoolFees(allNeedFees);
+            const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
+            for (const [addr, pools] of poolsRef.current) {
+              poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
+            }
+            for (const [addr, entry] of poolCache) {
+              poolCache.set(addr, { ...entry, pools: entry.pools.map(p => enrichedMap.get(p.pairAddress) ?? p) });
+            }
+          }
+
           savePoolCache(poolCache);
         }
         const rows = buildRows(merged, poolsRef.current);
@@ -289,21 +305,19 @@ export function useStocksBoard() {
     }
   }, [buildRows]);
 
-  // M5: Escalating auto-retry (60s / 120s / 300s)
   useEffect(() => {
     if (!registryDegraded) {
-      retryAttemptRef.current = 0;
+      setRetryAttempt(0);
       return;
     }
-    const attempt = retryAttemptRef.current;
-    if (attempt >= RETRY_DELAYS.length) return;
-    const delay = RETRY_DELAYS[attempt];
+    if (retryAttempt >= RETRY_DELAYS.length) return;
+    const delay = RETRY_DELAYS[retryAttempt];
     const timer = setTimeout(() => {
-      retryAttemptRef.current = attempt + 1;
+      setRetryAttempt(prev => prev + 1);
       retryRegistry().catch(() => {});
     }, delay);
     return () => clearTimeout(timer);
-  }, [registryDegraded, retryRegistry]);
+  }, [registryDegraded, retryAttempt, retryRegistry]);
 
   const addSymbol = useCallback((symbol: string) => {
     setUserAddedSymbols(prev => {

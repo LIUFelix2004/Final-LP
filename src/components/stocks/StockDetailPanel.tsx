@@ -24,6 +24,14 @@ interface Props {
   amountProgress: string;
 }
 
+function summarizeReasons(reasons: string[]): string {
+  const counts = new Map<string, number>();
+  for (const r of reasons) {
+    counts.set(r, (counts.get(r) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([r, c]) => c > 1 ? `${r} ×${c}` : r).join('、');
+}
+
 function premiumBadge(premium: number | null): { text: string; cls: string } | null {
   if (premium === null || !Number.isFinite(premium)) return null;
   const pct = formatSignedPercent(premium);
@@ -159,6 +167,11 @@ export function StockDetailPanel({
               {amountAnalysis.buyStats && amountAnalysis.buyStats.failedCount > 0 && (
                 <div className="amount-row amount-fail">
                   买入侧 {amountAnalysis.buyStats.failedCount}/{amountAnalysis.buyStats.quotedCount + amountAnalysis.buyStats.failedCount} 个池报价失败
+                  {amountAnalysis.buyStats.failedReasons.length > 0 && (
+                    <span className="fail-reasons">
+                      （{summarizeReasons(amountAnalysis.buyStats.failedReasons)}）
+                    </span>
+                  )}
                 </div>
               )}
               {amountAnalysis.sellResult && (
@@ -184,6 +197,11 @@ export function StockDetailPanel({
               {amountAnalysis.sellStats && amountAnalysis.sellStats.failedCount > 0 && (
                 <div className="amount-row amount-fail">
                   卖出侧 {amountAnalysis.sellStats.failedCount}/{amountAnalysis.sellStats.quotedCount + amountAnalysis.sellStats.failedCount} 个池报价失败
+                  {amountAnalysis.sellStats.failedReasons.length > 0 && (
+                    <span className="fail-reasons">
+                      （{summarizeReasons(amountAnalysis.sellStats.failedReasons)}）
+                    </span>
+                  )}
                 </div>
               )}
               {amountAnalysis.buyResult && !amountAnalysis.sellResult && !amountAnalysis.sellStats?.failedCount && (

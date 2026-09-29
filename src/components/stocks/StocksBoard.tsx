@@ -99,7 +99,7 @@ export function StocksBoard({ onBack }: Props) {
       />
       {registryDegraded && (
         <div className="stocks-error-bar">
-          代币列表加载失败，仅加载 40 个种子代币（其中 {rows.length} 个有池）
+          代币列表加载失败，仅加载 {registry.length} 个种子代币（其中 {rows.length} 个有池）
           <button className="stocks-retry-btn" onClick={() => retryRegistry().catch(() => {})} disabled={retryLoading}>
             {retryLoading ? '重试中...' : '重试'}
           </button>
