@@ -8,6 +8,9 @@ import {
   REGISTRY_CACHE_TTL_MS,
 } from '../../config/stocks';
 import { CHAINS } from '../../config/chains';
+import snapshotJson from '../../config/stock-registry.json';
+
+const REGISTRY_SEGMENT_SIZE = 30000n;
 
 const ERC20_SYMBOL_ABI = [
   { inputs: [], name: 'symbol', outputs: [{ name: '', type: 'string' }], stateMutability: 'view', type: 'function' },
@@ -42,6 +45,27 @@ export interface RegistryResult {
   degraded: boolean;
 }
 
+function isBlockRangeError(err: unknown): boolean {
+  const msg = String(err);
+  return msg.includes('-32602') || msg.includes('query spans') || msg.includes('block range');
+}
+
+function loadSnapshot(): StockToken[] {
+  try {
+    const tokens: StockToken[] = (snapshotJson as { tokens: Array<{ address: string; symbol: string; name: string; official: boolean }> }).tokens.map(t => ({
+      address: t.address,
+      symbol: t.symbol,
+      name: t.name,
+      official: t.official,
+    }));
+    return tokens.length > 0 ? tokens : SEED_STOCKS;
+  } catch {
+    return SEED_STOCKS;
+  }
+}
+
+const snapshotBlock = BigInt((snapshotJson as { snapshotBlock: number }).snapshotBlock || 0);
+
 const REGISTRY_RETRY_DELAYS = [2000, 5000, 10000];
 
 export async function enumerateOfficialTokens(): Promise<RegistryResult> {
@@ -53,34 +77,58 @@ export async function enumerateOfficialTokens(): Promise<RegistryResult> {
       return { tokens, degraded: false };
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
+      if (isBlockRangeError(err)) {
+        break;
+      }
       if (attempt < REGISTRY_RETRY_DELAYS.length) {
         await new Promise(r => setTimeout(r, REGISTRY_RETRY_DELAYS[attempt]));
       }
     }
   }
 
-  console.warn('[registry] all retries failed, returning SEED_STOCKS:', lastError?.message);
-  return { tokens: SEED_STOCKS, degraded: true };
+  console.warn('[registry] all retries failed, returning snapshot:', lastError?.message);
+  return { tokens: loadSnapshot(), degraded: true };
 }
 
 async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
   const client = getClient();
+  const currentBlock = await client.getBlockNumber();
 
-  const logs = await client.getLogs({
-    event: parseAbiItem('event BeaconUpgraded(address indexed beacon)'),
-    args: { beacon: OFFICIAL_BEACON as Address },
-    fromBlock: 0n,
-  });
+  const fromBlock = snapshotBlock > 0n ? snapshotBlock : 0n;
+  const addresses = new Set<string>();
 
-  const addresses = [...new Set(logs.map(log => log.address.toLowerCase()))];
-  if (addresses.length === 0) return SEED_STOCKS;
+  // Load snapshot addresses first
+  if (snapshotBlock > 0n) {
+    for (const t of loadSnapshot()) {
+      addresses.add(t.address.toLowerCase());
+    }
+  }
 
-  const symbolCalls = addresses.map(addr => ({
+  // Segmented getLogs in REGISTRY_SEGMENT_SIZE chunks (no address filter → 30000 block limit)
+  let cursor = fromBlock;
+  while (cursor <= currentBlock) {
+    const end = cursor + REGISTRY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + REGISTRY_SEGMENT_SIZE - 1n;
+    const logs = await client.getLogs({
+      event: parseAbiItem('event BeaconUpgraded(address indexed beacon)'),
+      args: { beacon: OFFICIAL_BEACON as Address },
+      fromBlock: cursor,
+      toBlock: end,
+    });
+    for (const log of logs) {
+      addresses.add(log.address.toLowerCase());
+    }
+    cursor = end + 1n;
+  }
+
+  if (addresses.size === 0) return loadSnapshot();
+
+  const addrArr = [...addresses];
+  const symbolCalls = addrArr.map(addr => ({
     address: addr as Address,
     abi: ERC20_SYMBOL_ABI,
     functionName: 'symbol' as const,
   }));
-  const nameCalls = addresses.map(addr => ({
+  const nameCalls = addrArr.map(addr => ({
     address: addr as Address,
     abi: ERC20_NAME_ABI,
     functionName: 'name' as const,
@@ -89,7 +137,7 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
   const batchSize = 50;
   const tokens: StockToken[] = [];
 
-  for (let i = 0; i < addresses.length; i += batchSize) {
+  for (let i = 0; i < addrArr.length; i += batchSize) {
     const symBatch = symbolCalls.slice(i, i + batchSize);
     const nameBatch = nameCalls.slice(i, i + batchSize);
     const [symResults, nameResults] = await Promise.all([
@@ -103,7 +151,7 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
         const symbol = symR.result as string;
         const name = nameR.status === 'success' && nameR.result ? (nameR.result as string) : symbol;
         tokens.push({
-          address: addresses[i + j],
+          address: addrArr[i + j],
           symbol,
           name: name.replace(/\s*•\s*Robinhood Token$/, ''),
           official: true,

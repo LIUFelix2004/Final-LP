@@ -2,9 +2,11 @@ import { createPublicClient, http, encodeFunctionData, decodeFunctionResult, par
 import type { StockPool } from '../../types/stocks';
 import { USDG_ADDRESS, USDG_DECIMALS, V3_QUOTER_V2, V4_QUOTER, V4_POOL_MANAGER_ROBINHOOD, ROBINHOOD_CHAIN_ID } from '../../config/stocks';
 import { CHAINS } from '../../config/chains';
+import v4SnapshotJson from '../../config/v4-poolkeys.json';
 
 const STOCK_TOKEN_DECIMALS = 18;
 const SANITY_THRESHOLD = 0.10;
+const V4_KEY_SEGMENT_SIZE = 10_000_000n;
 
 const V3_QUOTE_ABI = [
   {
@@ -88,6 +90,7 @@ export interface QuoteStats {
   quotedCount: number;
   failedCount: number;
   failedPools: string[];
+  failedReasons: string[];
   mainPoolFailed: boolean;
 }
 
@@ -105,7 +108,6 @@ export interface V4PoolKey {
 }
 
 const V4_POOLKEY_CACHE_KEY = 'stocks-v4-poolkeys-v2';
-const V4_POOLKEY_CACHE_TTL_MS = 3600_000;
 const V4_MAX_CONCURRENCY = 3;
 
 interface V4CacheEntry {
@@ -117,14 +119,40 @@ interface V4CacheEntry {
   timestamp: number;
 }
 
+function isBlockRangeError(err: unknown): boolean {
+  const msg = String(err);
+  return msg.includes('-32602') || msg.includes('query spans') || msg.includes('block range');
+}
+
+function loadV4Snapshot(): Map<string, V4PoolKey> {
+  const map = new Map<string, V4PoolKey>();
+  try {
+    const snap = v4SnapshotJson as { keys: Record<string, { currency0: string; currency1: string; fee: number; tickSpacing: number; hooks: string }> };
+    for (const [poolId, entry] of Object.entries(snap.keys)) {
+      map.set(poolId.toLowerCase(), {
+        currency0: entry.currency0 as Address,
+        currency1: entry.currency1 as Address,
+        fee: entry.fee,
+        tickSpacing: entry.tickSpacing,
+        hooks: entry.hooks as Address,
+      });
+    }
+  } catch { /* empty snapshot */ }
+  return map;
+}
+
+const v4SnapshotKeys = loadV4Snapshot();
+
 function loadV4PoolKeyCacheForPool(poolId: string): V4PoolKey | null {
+  const snapKey = v4SnapshotKeys.get(poolId.toLowerCase());
+  if (snapKey) return snapKey;
+
   try {
     const raw = localStorage.getItem(V4_POOLKEY_CACHE_KEY);
     if (!raw) return null;
     const data: Record<string, V4CacheEntry> = JSON.parse(raw);
     const entry = data[poolId.toLowerCase()];
     if (!entry) return null;
-    if (Date.now() - entry.timestamp > V4_POOLKEY_CACHE_TTL_MS) return null;
     return {
       currency0: entry.currency0 as Address,
       currency1: entry.currency1 as Address,
@@ -158,29 +186,71 @@ async function fetchV4PoolKeyForPool(poolId: string): Promise<V4PoolKey | null> 
   if (cached) return cached;
 
   const client = getClient();
-  const logs = await client.getLogs({
-    address: V4_POOL_MANAGER_ROBINHOOD as Address,
-    event: INITIALIZE_EVENT,
-    args: { id: poolId as Hex },
-    fromBlock: 0n,
-  });
+  const currentBlock = await client.getBlockNumber();
 
-  if (logs.length === 0) return null;
+  // Segmented getLogs with PoolManager address filter — 10M block limit
+  let cursor = 0n;
+  while (cursor <= currentBlock) {
+    const end = cursor + V4_KEY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + V4_KEY_SEGMENT_SIZE - 1n;
+    try {
+      const logs = await client.getLogs({
+        address: V4_POOL_MANAGER_ROBINHOOD as Address,
+        event: INITIALIZE_EVENT,
+        args: { id: poolId as Hex },
+        fromBlock: cursor,
+        toBlock: end,
+      });
 
-  const log = logs[0];
-  const args = log.args;
-  if (!args.id || !args.currency0 || !args.currency1) return null;
+      if (logs.length > 0) {
+        const log = logs[0];
+        const args = log.args;
+        if (!args.id || !args.currency0 || !args.currency1) return null;
 
-  const key: V4PoolKey = {
-    currency0: args.currency0,
-    currency1: args.currency1,
-    fee: args.fee ?? 0,
-    tickSpacing: args.tickSpacing ?? 0,
-    hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
-  };
+        const key: V4PoolKey = {
+          currency0: args.currency0,
+          currency1: args.currency1,
+          fee: args.fee ?? 0,
+          tickSpacing: args.tickSpacing ?? 0,
+          hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
+        };
 
-  saveV4PoolKeyToCache(poolId, key);
-  return key;
+        saveV4PoolKeyToCache(poolId, key);
+        return key;
+      }
+    } catch (err) {
+      if (isBlockRangeError(err) && (end - cursor) > 1_000_000n) {
+        // Reduce segment size for this query — shouldn't happen with 10M but be safe
+        const mid = cursor + (end - cursor) / 2n;
+        const logs1 = await client.getLogs({
+          address: V4_POOL_MANAGER_ROBINHOOD as Address,
+          event: INITIALIZE_EVENT,
+          args: { id: poolId as Hex },
+          fromBlock: cursor,
+          toBlock: mid,
+        });
+        if (logs1.length > 0) {
+          const args = logs1[0].args;
+          if (args.id && args.currency0 && args.currency1) {
+            const key: V4PoolKey = {
+              currency0: args.currency0,
+              currency1: args.currency1,
+              fee: args.fee ?? 0,
+              tickSpacing: args.tickSpacing ?? 0,
+              hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
+            };
+            saveV4PoolKeyToCache(poolId, key);
+            return key;
+          }
+        }
+        cursor = mid + 1n;
+        continue;
+      }
+      throw err;
+    }
+    cursor = end + 1n;
+  }
+
+  return null;
 }
 
 export async function fetchV4PoolKeys(poolIds: string[]): Promise<Map<string, V4PoolKey>> {
@@ -422,7 +492,7 @@ export async function quoteBestPool(
   direction: 'buy' | 'sell',
   onProgress?: (done: number, total: number) => void,
 ): Promise<BestPoolResult> {
-  const emptyStats: QuoteStats = { quotedCount: 0, failedCount: 0, failedPools: [], mainPoolFailed: false };
+  const emptyStats: QuoteStats = { quotedCount: 0, failedCount: 0, failedPools: [], failedReasons: [], mainPoolFailed: false };
 
   const uniPools = pools.filter(p => p.dex === 'Uniswap');
   if (uniPools.length === 0) return { best: null, stats: emptyStats };
@@ -450,52 +520,58 @@ export async function quoteBestPool(
     }
   }
 
+  // M3: Track keyless V4 pools as failures
+  const keylessV4Failures: Array<{ pool: StockPool; reason: string }> = [];
+
   const tasks: Array<{ pool: StockPool; quoteFn: () => Promise<AmountQuoteResult | null> }> = [
     ...v3Pools.map(p => ({ pool: p, quoteFn: () => quoteV3Pool(p, amountUsdg, direction) })),
   ];
 
-  if (v4KeyMap) {
-    for (const p of v4Pools) {
-      const key = v4KeyMap.get(p.pairAddress.toLowerCase());
-      if (key) {
-        tasks.push({ pool: p, quoteFn: () => quoteV4Pool(p, key, amountUsdg, direction) });
+  for (const p of v4Pools) {
+    const key = v4KeyMap?.get(p.pairAddress.toLowerCase());
+    if (key) {
+      tasks.push({ pool: p, quoteFn: () => quoteV4Pool(p, key, amountUsdg, direction) });
+    } else {
+      keylessV4Failures.push({ pool: p, reason: '缺少 V4 key' });
+    }
+  }
+
+  const totalPools = tasks.length + keylessV4Failures.length;
+  if (totalPools === 0) return { best: null, stats: emptyStats };
+
+  let done = 0;
+  const firstResults: Array<AmountQuoteResult | null> = new Array(tasks.length).fill(null);
+
+  if (tasks.length > 0) {
+    const queue = tasks.map((_, i) => i);
+    async function worker() {
+      while (queue.length > 0) {
+        const idx = queue.shift()!;
+        firstResults[idx] = await tasks[idx].quoteFn();
+        done++;
+        onProgress?.(done + keylessV4Failures.length, totalPools);
       }
     }
-  }
+    const workerCount = Math.min(QUOTE_CONCURRENCY, tasks.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-  if (tasks.length === 0) return { best: null, stats: emptyStats };
-
-  const totalPools = tasks.length;
-  let done = 0;
-  const firstResults: Array<AmountQuoteResult | null> = new Array(totalPools).fill(null);
-
-  const queue = tasks.map((_, i) => i);
-  async function worker() {
-    while (queue.length > 0) {
-      const idx = queue.shift()!;
-      firstResults[idx] = await tasks[idx].quoteFn();
-      done++;
-      onProgress?.(done, totalPools);
+    const needsRetry: number[] = [];
+    for (let i = 0; i < firstResults.length; i++) {
+      if (firstResults[i] === null) needsRetry.push(i);
     }
-  }
-  const workerCount = Math.min(QUOTE_CONCURRENCY, totalPools);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
-  const needsRetry: number[] = [];
-  for (let i = 0; i < firstResults.length; i++) {
-    if (firstResults[i] === null) needsRetry.push(i);
-  }
-
-  if (needsRetry.length > 0) {
-    await Promise.all(needsRetry.map(async (idx) => {
-      await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
-      firstResults[idx] = await tasks[idx].quoteFn();
-    }));
+    if (needsRetry.length > 0) {
+      await Promise.all(needsRetry.map(async (idx) => {
+        await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+        firstResults[idx] = await tasks[idx].quoteFn();
+      }));
+    }
   }
 
   let quotedCount = 0;
   let failedCount = 0;
   const failedPools: string[] = [];
+  const failedReasons: string[] = [];
   const valid: AmountQuoteResult[] = [];
 
   for (let i = 0; i < firstResults.length; i++) {
@@ -505,14 +581,22 @@ export async function quoteBestPool(
     } else {
       failedCount++;
       failedPools.push(tasks[i].pool.pairAddress);
+      failedReasons.push('报价失败');
     }
+  }
+
+  // Add keyless V4 pool failures
+  for (const { pool, reason } of keylessV4Failures) {
+    failedCount++;
+    failedPools.push(pool.pairAddress);
+    failedReasons.push(reason);
   }
 
   const mainPoolFailed = failedPools.some(addr =>
     addr.toLowerCase() === mainPool.pairAddress.toLowerCase()
   );
 
-  const stats: QuoteStats = { quotedCount, failedCount, failedPools, mainPoolFailed };
+  const stats: QuoteStats = { quotedCount, failedCount, failedPools, failedReasons, mainPoolFailed };
 
   if (valid.length === 0) {
     const result: BestPoolResult = { best: null, stats };
@@ -545,7 +629,7 @@ export async function analyzeAmount(
   fairPrice: number | null,
   onProgress?: (msg: string) => void,
 ): Promise<AmountAnalysis> {
-  const emptyStats: QuoteStats = { quotedCount: 0, failedCount: 0, failedPools: [], mainPoolFailed: false };
+  const emptyStats: QuoteStats = { quotedCount: 0, failedCount: 0, failedPools: [], failedReasons: [], mainPoolFailed: false };
 
   const [buyPoolResult, sellPoolResult] = await Promise.all([
     quoteBestPool(pools, amountUsdg, 'buy', (done, total) =>

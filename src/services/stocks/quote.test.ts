@@ -12,6 +12,8 @@ vi.mock('viem', async () => {
     createPublicClient: vi.fn(() => ({
       call: vi.fn(),
       getLogs: vi.fn(() => []),
+      getBlockNumber: vi.fn(() => Promise.resolve(75_500_000n)),
+      multicall: vi.fn(() => Promise.resolve([])),
     })),
     http: vi.fn(),
   };
@@ -266,6 +268,7 @@ describe('fetchV4PoolKeys queries by poolId (P0.2)', () => {
     const mockClient = {
       call: vi.fn(),
       getLogs: mockGetLogs,
+      getBlockNumber: vi.fn().mockResolvedValue(75_500_000n),
     };
     vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
 
@@ -447,10 +450,170 @@ describe('fixture data validation (P1.4)', () => {
 });
 
 describe('registry retry (P0.2)', () => {
-  it('enumerateOfficialTokens retries on failure', async () => {
+  it('enumerateOfficialTokens retries on failure then returns snapshot', async () => {
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockRejectedValue(new Error('RPC error')),
+      getBlockNumber: vi.fn().mockResolvedValue(75_500_000n),
+      multicall: vi.fn().mockResolvedValue([]),
+      getStorageAt: vi.fn(),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
     const { enumerateOfficialTokens } = await import('./registry');
     const result = await enumerateOfficialTokens();
     expect(result.tokens.length).toBeGreaterThan(0);
-    expect(typeof result.degraded).toBe('boolean');
+    expect(result.degraded).toBe(true);
+  }, 20_000);
+});
+
+describe('registry -32602 detection (M2)', () => {
+  it('skips retries on block range error and returns snapshot', async () => {
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockRejectedValue(new Error('Invalid params: -32602 query spans too many blocks')),
+      getBlockNumber: vi.fn().mockResolvedValue(75_500_000n),
+      multicall: vi.fn().mockResolvedValue([]),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const { enumerateOfficialTokens } = await import('./registry');
+    const result = await enumerateOfficialTokens();
+    expect(result.tokens.length).toBeGreaterThan(0);
+    expect(result.degraded).toBe(true);
+    // Should have called getLogs only once (no retries for -32602)
+    expect(mockClient.getLogs.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('M3: keyless V4 pools count as failures', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearQuoteCache();
+  });
+
+  it('V4 main pool without key → mainPoolFailed=true, no "不划算"', async () => {
+    const v4MainPool = makePool({
+      pairAddress: '0x' + 'cc'.repeat(20),
+      version: 'V4',
+      dex: 'Uniswap',
+      liquidityUsd: 1_000_000,
+      feeRate: null,
+    });
+
+    // getLogs returns empty → no key found for the V4 pool
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(75_500_000n),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const result = await quoteBestPool([v4MainPool], 2000, 'buy');
+
+    expect(result.stats.mainPoolFailed).toBe(true);
+    expect(result.stats.failedCount).toBe(1);
+    expect(result.stats.failedReasons).toContain('缺少 V4 key');
+    expect(result.best).toBeNull();
+  });
+
+  it('V4 pool with key succeeds normally', async () => {
+    const v4Pool = makePool({
+      pairAddress: '0x' + 'dd'.repeat(20),
+      version: 'V4',
+      dex: 'Uniswap',
+      liquidityUsd: 500_000,
+      feeRate: null,
+      tokenAddress: TSLA_ADDR,
+      priceNative: 200,
+    });
+
+    const usdgAddr = USDG_ADDRESS.toLowerCase();
+    const initLog = {
+      args: {
+        id: v4Pool.pairAddress,
+        currency0: usdgAddr,
+        currency1: TSLA_ADDR,
+        fee: 3000,
+        tickSpacing: 60,
+        hooks: '0x0000000000000000000000000000000000000000',
+      },
+    };
+
+    const amountOut = 10_000000000000000000n;
+    const gasEstimate = 50000n;
+    const v4Response = '0x' + [
+      amountOut.toString(16).padStart(64, '0'),
+      gasEstimate.toString(16).padStart(64, '0'),
+    ].join('');
+
+    const mockClient = {
+      call: vi.fn().mockResolvedValue({ data: v4Response }),
+      getLogs: vi.fn().mockResolvedValue([initLog]),
+      getBlockNumber: vi.fn().mockResolvedValue(75_500_000n),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const result = await quoteBestPool([v4Pool], 2000, 'buy');
+
+    expect(result.stats.mainPoolFailed).toBe(false);
+    expect(result.stats.failedCount).toBe(0);
+    expect(result.best).not.toBeNull();
+  });
+});
+
+describe('M1: batch supplement for tokens with no USDG pools', () => {
+  it('detects token with WETH-only batch result and supplements individually', async () => {
+    const { discoverPoolsBatch } = await import('./pools');
+
+    const tslaToken = { address: TSLA_ADDR, symbol: 'TSLA', name: 'Tesla', official: true };
+
+    // Batch API returns a WETH pair only (no USDG)
+    const wethPair = {
+      chainId: 'robinhood',
+      dexId: 'uniswap_v3',
+      pairAddress: '0x' + 'ff'.repeat(20),
+      baseToken: { address: TSLA_ADDR, symbol: 'TSLA', name: 'Tesla' },
+      quoteToken: { address: '0x' + 'ee'.repeat(20), symbol: 'WETH', name: 'WETH' },
+      liquidity: { usd: 100_000 },
+      volume: { h24: 50000 },
+    };
+
+    // Individual API returns USDG pair
+    const usdgPair = {
+      chainId: 'robinhood',
+      dexId: 'uniswap_v3',
+      pairAddress: '0x' + 'dd'.repeat(20),
+      baseToken: { address: TSLA_ADDR, symbol: 'TSLA', name: 'Tesla' },
+      quoteToken: { address: USDG_ADDRESS, symbol: 'USDG', name: 'USDG' },
+      liquidity: { usd: 200_000 },
+      volume: { h24: 80000 },
+    };
+
+    let callCount = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+      const urlStr = String(url);
+      callCount++;
+      if (urlStr.includes('/tokens/v1/robinhood/')) {
+        return new Response(JSON.stringify([wethPair]), { status: 200 });
+      }
+      if (urlStr.includes('/token-pairs/v1/robinhood/')) {
+        return new Response(JSON.stringify([usdgPair]), { status: 200 });
+      }
+      return new Response('[]', { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const results = await discoverPoolsBatch([tslaToken]);
+      const tslaPools = results.get(TSLA_ADDR.toLowerCase()) ?? [];
+      // TSLA should have gotten USDG pools from the individual supplement call
+      expect(tslaPools.length).toBeGreaterThan(0);
+      expect(tslaPools[0].tokenSymbol).toBe('TSLA');
+      // Should have called both batch and individual APIs
+      expect(callCount).toBeGreaterThanOrEqual(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

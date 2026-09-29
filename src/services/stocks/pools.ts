@@ -1,8 +1,12 @@
 import type { StockPool, StockToken, StockFeeRow } from '../../types/stocks';
-import { USDG_ADDRESS, MIN_POOL_LIQUIDITY, MIN_POOL_VOLUME_24H, MAX_POOLS_PER_STOCK, POOL_CACHE_TTL_MS } from '../../config/stocks';
+import { USDG_ADDRESS, MIN_POOL_LIQUIDITY, MIN_POOL_VOLUME_24H, MAX_POOLS_PER_STOCK } from '../../config/stocks';
 
 const DEXSCREENER_API = 'https://api.dexscreener.com';
 const DEXSCREENER_TOKEN_PAIRS = `${DEXSCREENER_API}/token-pairs/v1/robinhood`;
+
+const POOL_CACHE_KEY = 'stocks-pools-v2';
+const POOL_CACHE_TTL_MS = 6 * 3600 * 1000;
+const EMPTY_POOL_CACHE_TTL_MS = 10 * 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
@@ -168,6 +172,21 @@ function pairToStockPool(pair: DsPair, tokenAddress: string): StockPool | null {
   };
 }
 
+function countUsdgPools(pairs: DsPair[], tokenAddress: string): number {
+  let count = 0;
+  const tokenAddr = tokenAddress.toLowerCase();
+  const usdgAddr = USDG_ADDRESS.toLowerCase();
+  for (const pair of pairs) {
+    if (pair.chainId !== 'robinhood') continue;
+    const base = pair.baseToken.address.toLowerCase();
+    const quote = pair.quoteToken.address.toLowerCase();
+    if ((base === usdgAddr && quote === tokenAddr) || (quote === usdgAddr && base === tokenAddr)) {
+      count++;
+    }
+  }
+  return count;
+}
+
 export async function discoverPoolsForToken(
   token: StockToken,
   signal?: AbortSignal,
@@ -215,6 +234,7 @@ export async function discoverPoolsBatch(
   tokens: StockToken[],
   signal?: AbortSignal,
   onProgress?: (current: number, total: number) => void,
+  onBatchDone?: (results: Map<string, StockPool[]>) => void,
 ): Promise<Map<string, StockPool[]>> {
   const result = new Map<string, StockPool[]>();
 
@@ -223,12 +243,20 @@ export async function discoverPoolsBatch(
     const batch = tokens.slice(i, i + DS_BATCH_SIZE);
     const addresses = batch.map(t => t.address).join(',');
 
+    // Tokens that need individual follow-up (batch returned < 1 USDG pool)
+    const needsSupplement: StockToken[] = [];
+
     try {
       const resp = await fetchWithRetry(`${DEXSCREENER_BATCH_API}/${addresses}`);
       if (signal?.aborted) break;
       const pairs: DsPair[] = await resp.json();
 
       for (const token of batch) {
+        const usdgCount = countUsdgPools(pairs, token.address);
+        if (usdgCount < 1) {
+          needsSupplement.push(token);
+          continue;
+        }
         const pools: StockPool[] = [];
         const seen = new Set<string>();
         for (const pair of pairs) {
@@ -241,16 +269,21 @@ export async function discoverPoolsBatch(
         result.set(token.address.toLowerCase(), filterAndSortPools(pools));
       }
     } catch {
-      for (const token of batch) {
-        if (signal?.aborted) break;
-        try {
-          const pools = await discoverPoolsForToken(token, signal);
-          result.set(token.address.toLowerCase(), pools);
-        } catch { /* individual also failed */ }
-      }
+      // Batch failed entirely — all tokens need individual discovery
+      needsSupplement.push(...batch.filter(t => !result.has(t.address.toLowerCase())));
+    }
+
+    // Supplement tokens with < 1 USDG pool via individual token-pairs API
+    for (const token of needsSupplement) {
+      if (signal?.aborted) break;
+      try {
+        const pools = await discoverPoolsForToken(token, signal);
+        result.set(token.address.toLowerCase(), pools);
+      } catch { /* individual also failed */ }
     }
 
     onProgress?.(Math.min(i + DS_BATCH_SIZE, tokens.length), tokens.length);
+    onBatchDone?.(result);
     if (i + DS_BATCH_SIZE < tokens.length) await sleep(200);
   }
 
@@ -370,8 +403,6 @@ export function updatePoolsFromPairs(
   });
 }
 
-const POOL_CACHE_KEY = 'stocks-pools-v1';
-
 interface PoolCacheEntry {
   tokenAddress: string;
   pools: StockPool[];
@@ -386,7 +417,8 @@ export function loadPoolCache(): Map<string, PoolCacheEntry> {
     const now = Date.now();
     const map = new Map<string, PoolCacheEntry>();
     for (const e of entries) {
-      if (now - e.timestamp < POOL_CACHE_TTL_MS) {
+      const ttl = e.pools.length === 0 ? EMPTY_POOL_CACHE_TTL_MS : POOL_CACHE_TTL_MS;
+      if (now - e.timestamp < ttl) {
         map.set(e.tokenAddress.toLowerCase(), e);
       }
     }
