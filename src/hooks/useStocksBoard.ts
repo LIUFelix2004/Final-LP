@@ -8,9 +8,11 @@ import {
   loadUserTokens,
   mergeRegistries,
   removeUserToken,
+  type RegistryResult,
 } from '../services/stocks/registry';
 import {
   discoverPoolsForToken,
+  discoverPoolsBatch,
   buildFeeRow,
   refreshPoolPrices,
   updatePoolsFromPairs,
@@ -38,6 +40,7 @@ export function useStocksBoard() {
   const [autoRefresh, setAutoRefresh] = useState(() => {
     try { return localStorage.getItem('stocks-auto-refresh') !== 'false'; } catch { return true; }
   });
+  const [registryDegraded, setRegistryDegraded] = useState(false);
   const [userAddedSymbols, setUserAddedSymbols] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem('stocks-user-symbols-v1');
@@ -105,11 +108,12 @@ export function useStocksBoard() {
       if (cached && cached.length > 0) {
         tokens = cached;
       } else {
-        try {
-          tokens = await enumerateOfficialTokens();
+        const result: RegistryResult = await enumerateOfficialTokens();
+        tokens = result.tokens;
+        if (result.degraded) {
+          setRegistryDegraded(true);
+        } else {
           saveRegistryCache(tokens);
-        } catch {
-          tokens = SEED_STOCKS;
         }
       }
       if (cancelled) return;
@@ -159,60 +163,37 @@ export function useStocksBoard() {
           ...needsDiscovery.filter(t => !seedAddrs.has(t.address.toLowerCase())),
         ];
 
-        const failedTokens: StockToken[] = [];
+        const abortController = new AbortController();
+        const batchResults = await discoverPoolsBatch(
+          prioritized,
+          abortController.signal,
+          (current, total) => {
+            if (!cancelled && gen === discoveryGenRef.current) {
+              setDiscoveryProgress({ current, total });
+            }
+          },
+        );
 
-        for (let i = 0; i < prioritized.length; i++) {
-          if (cancelled || gen !== discoveryGenRef.current) return;
-          const token = prioritized[i];
-          setDiscoveryProgress({ current: i + 1, total: prioritized.length });
-          try {
-            const pools = await discoverPoolsForToken(token);
-            if (cancelled) return;
-            const enriched = pools.length > 0 ? await enrichStockPoolFees(pools) : [];
-            poolsRef.current.set(token.address.toLowerCase(), enriched);
+        if (cancelled || gen !== discoveryGenRef.current) return;
 
-            poolCache.set(token.address.toLowerCase(), {
-              tokenAddress: token.address,
-              pools: enriched,
-              timestamp: Date.now(),
-            });
-          } catch {
-            failedTokens.push(token);
-          }
+        let allNeedFees: StockPool[] = [];
+        for (const [addr, pools] of batchResults) {
+          poolsRef.current.set(addr, pools);
+          allNeedFees.push(...pools.filter(p => p.feeRate === null));
+          poolCache.set(addr, { tokenAddress: tokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools, timestamp: Date.now() });
+        }
 
-          if (i % 5 === 4 || i === prioritized.length - 1) {
-            savePoolCache(poolCache);
-            const rows = buildRows(tokens, poolsRef.current);
-            setFeeRows(rows);
-            if (loading) { setLoading(false); setLastUpdate(new Date()); }
-          }
-
-          if (i < prioritized.length - 1) {
-            await new Promise(r => setTimeout(r, 200));
+        if (allNeedFees.length > 0 && !cancelled) {
+          const enriched = await enrichStockPoolFees(allNeedFees);
+          const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
+          for (const [addr, pools] of poolsRef.current) {
+            poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
           }
         }
 
-        if (failedTokens.length > 0 && !cancelled && gen === discoveryGenRef.current) {
-          await new Promise(r => setTimeout(r, 3000));
-          for (const token of failedTokens) {
-            if (cancelled || gen !== discoveryGenRef.current) break;
-            try {
-              const pools = await discoverPoolsForToken(token);
-              if (cancelled) break;
-              const enriched = pools.length > 0 ? await enrichStockPoolFees(pools) : [];
-              poolsRef.current.set(token.address.toLowerCase(), enriched);
-              poolCache.set(token.address.toLowerCase(), {
-                tokenAddress: token.address,
-                pools: enriched,
-                timestamp: Date.now(),
-              });
-            } catch { /* retry also failed */ }
-            await new Promise(r => setTimeout(r, 300));
-          }
-          savePoolCache(poolCache);
-          const rows = buildRows(tokens, poolsRef.current);
-          setFeeRows(rows);
-        }
+        savePoolCache(poolCache);
+        const rows = buildRows(tokens, poolsRef.current);
+        setFeeRows(rows);
 
         setDiscovering(false);
         if (loading) setLoading(false);
@@ -252,6 +233,23 @@ export function useStocksBoard() {
       setFeeRows(rows);
     }
   }, [userAddedSymbols]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const retryRegistry = useCallback(async () => {
+    const result = await enumerateOfficialTokens();
+    if (!result.degraded) {
+      setRegistryDegraded(false);
+      const userTokens = loadUserTokens();
+      const merged = mergeRegistries(result.tokens, userTokens);
+      setRegistry(merged);
+      saveRegistryCache(result.tokens);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!registryDegraded) return;
+    const timer = setTimeout(() => { retryRegistry().catch(() => {}); }, 60_000);
+    return () => clearTimeout(timer);
+  }, [registryDegraded, retryRegistry]);
 
   const addSymbol = useCallback((symbol: string) => {
     setUserAddedSymbols(prev => {
@@ -345,5 +343,7 @@ export function useStocksBoard() {
     removeSymbol,
     registry,
     userAddedSymbols,
+    registryDegraded,
+    retryRegistry,
   };
 }

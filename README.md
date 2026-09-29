@@ -176,3 +176,24 @@ Robinhood:
 - Uniswap V2 Factory: `0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f`
 - Uniswap V3 Factory: `0x1f7d7550B1b028f7571E69A784071F0205FD2EfA`
 - Uniswap V4 PoolManager: `0x8366a39CC670B4001A1121B8F6A443A643e40951`
+
+## 股票看板 (Stock Board)
+
+Real-time on-chain stock token board for Robinhood Chain (4663). Discovers stock token pools via DexScreener, fetches on-chain quotes from Uniswap V3/V4, and compares with fair market price to surface trading signals.
+
+### Features
+- Token registry: enumerates official stock tokens from the beacon contract, with 40 seed tokens as fallback
+- Pool discovery: batch DexScreener API (30 tokens/request) with per-token fallback
+- On-chain quoting: V3 QuoterV2 + V4 Quoter with concurrency limit (3), 20s result cache, and per-pool retry on RPC failure
+- Fair price signals: premium/discount vs market price, "成交偏离（含手续费）" display, main-pool failure warning
+- Degraded mode: exponential-backoff retry (2s/5s/10s) on registry failure, auto-retry after 60s, banner with manual retry button
+- Amount analysis: simulates buy/sell for user-specified USDG amount, reports per-side quote stats (quoted/failed/mainPoolFailed)
+
+### Key Contracts (Robinhood Chain)
+| Contract | Address |
+|---|---|
+| V3 QuoterV2 | `0x33e885eD0Ec9bF04EcfB19341582aADCb4c8A9E7` |
+| V4 Quoter | `0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94` |
+| V4 PoolManager | `0x8366a39CC670B4001A1121B8F6A443A643e40951` |
+| V4 StateView | `0xF3334192D15450CdD385c8B70e03f9A6bD9E673b` |
+| USDG | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |

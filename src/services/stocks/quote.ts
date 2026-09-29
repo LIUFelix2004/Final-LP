@@ -84,6 +84,18 @@ export interface AmountQuoteResult {
   quotedVia: string;
 }
 
+export interface QuoteStats {
+  quotedCount: number;
+  failedCount: number;
+  failedPools: string[];
+  mainPoolFailed: boolean;
+}
+
+export interface BestPoolResult {
+  best: AmountQuoteResult | null;
+  stats: QuoteStats;
+}
+
 export interface V4PoolKey {
   currency0: Address;
   currency1: Address;
@@ -390,16 +402,44 @@ export async function quoteV4Pool(
   }
 }
 
+const QUOTE_CACHE_TTL_MS = 20_000;
+const quoteCache = new Map<string, { result: BestPoolResult; timestamp: number }>();
+
+function getQuoteCacheKey(pools: StockPool[], amountUsdg: number, direction: string): string {
+  const token = pools[0]?.tokenAddress ?? '';
+  return `${token}:${amountUsdg}:${direction}`;
+}
+
+export function clearQuoteCache(): void {
+  quoteCache.clear();
+}
+
+const QUOTE_CONCURRENCY = 3;
+
 export async function quoteBestPool(
   pools: StockPool[],
   amountUsdg: number,
   direction: 'buy' | 'sell',
-): Promise<AmountQuoteResult | null> {
+  onProgress?: (done: number, total: number) => void,
+): Promise<BestPoolResult> {
+  const emptyStats: QuoteStats = { quotedCount: 0, failedCount: 0, failedPools: [], mainPoolFailed: false };
+
   const uniPools = pools.filter(p => p.dex === 'Uniswap');
-  if (uniPools.length === 0) return null;
+  if (uniPools.length === 0) return { best: null, stats: emptyStats };
+
+  const cacheKey = getQuoteCacheKey(pools, amountUsdg, direction);
+  const cached = quoteCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < QUOTE_CACHE_TTL_MS) {
+    onProgress?.(1, 1);
+    return cached.result;
+  }
 
   const v3Pools = uniPools.filter(p => p.version === 'V3' && p.feeRate !== null);
   const v4Pools = uniPools.filter(p => p.version === 'V4');
+
+  const mainPool = uniPools.reduce((best, p) =>
+    (p.liquidityUsd ?? 0) > (best.liquidityUsd ?? 0) ? p : best
+  );
 
   let v4KeyMap: Map<string, V4PoolKey> | null = null;
   if (v4Pools.length > 0) {
@@ -410,31 +450,83 @@ export async function quoteBestPool(
     }
   }
 
-  const quotePromises: Promise<AmountQuoteResult | null>[] = [
-    ...v3Pools.map(p => quoteV3Pool(p, amountUsdg, direction)),
+  const tasks: Array<{ pool: StockPool; quoteFn: () => Promise<AmountQuoteResult | null> }> = [
+    ...v3Pools.map(p => ({ pool: p, quoteFn: () => quoteV3Pool(p, amountUsdg, direction) })),
   ];
 
   if (v4KeyMap) {
     for (const p of v4Pools) {
-      const poolId = p.pairAddress.toLowerCase();
-      const key = v4KeyMap.get(poolId);
+      const key = v4KeyMap.get(p.pairAddress.toLowerCase());
       if (key) {
-        quotePromises.push(quoteV4Pool(p, key, amountUsdg, direction));
+        tasks.push({ pool: p, quoteFn: () => quoteV4Pool(p, key, amountUsdg, direction) });
       }
     }
   }
 
-  if (quotePromises.length === 0) return null;
+  if (tasks.length === 0) return { best: null, stats: emptyStats };
 
-  const results = await Promise.all(quotePromises);
-  const valid = results.filter((r): r is AmountQuoteResult => r !== null);
-  if (valid.length === 0) return null;
+  const totalPools = tasks.length;
+  let done = 0;
+  const firstResults: Array<AmountQuoteResult | null> = new Array(totalPools).fill(null);
 
-  if (direction === 'buy') {
-    return valid.reduce((best, r) => r.effectivePrice < best.effectivePrice ? r : best);
-  } else {
-    return valid.reduce((best, r) => r.effectivePrice > best.effectivePrice ? r : best);
+  const queue = tasks.map((_, i) => i);
+  async function worker() {
+    while (queue.length > 0) {
+      const idx = queue.shift()!;
+      firstResults[idx] = await tasks[idx].quoteFn();
+      done++;
+      onProgress?.(done, totalPools);
+    }
   }
+  const workerCount = Math.min(QUOTE_CONCURRENCY, totalPools);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  const needsRetry: number[] = [];
+  for (let i = 0; i < firstResults.length; i++) {
+    if (firstResults[i] === null) needsRetry.push(i);
+  }
+
+  if (needsRetry.length > 0) {
+    await Promise.all(needsRetry.map(async (idx) => {
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
+      firstResults[idx] = await tasks[idx].quoteFn();
+    }));
+  }
+
+  let quotedCount = 0;
+  let failedCount = 0;
+  const failedPools: string[] = [];
+  const valid: AmountQuoteResult[] = [];
+
+  for (let i = 0; i < firstResults.length; i++) {
+    if (firstResults[i] !== null) {
+      quotedCount++;
+      valid.push(firstResults[i]!);
+    } else {
+      failedCount++;
+      failedPools.push(tasks[i].pool.pairAddress);
+    }
+  }
+
+  const mainPoolFailed = failedPools.some(addr =>
+    addr.toLowerCase() === mainPool.pairAddress.toLowerCase()
+  );
+
+  const stats: QuoteStats = { quotedCount, failedCount, failedPools, mainPoolFailed };
+
+  if (valid.length === 0) {
+    const result: BestPoolResult = { best: null, stats };
+    quoteCache.set(cacheKey, { result, timestamp: Date.now() });
+    return result;
+  }
+
+  const best = direction === 'buy'
+    ? valid.reduce((b, r) => r.effectivePrice < b.effectivePrice ? r : b)
+    : valid.reduce((b, r) => r.effectivePrice > b.effectivePrice ? r : b);
+
+  const result: BestPoolResult = { best, stats };
+  quoteCache.set(cacheKey, { result, timestamp: Date.now() });
+  return result;
 }
 
 export interface AmountAnalysis {
@@ -443,20 +535,31 @@ export interface AmountAnalysis {
   buyPremium: number | null;
   sellPremium: number | null;
   midPrice: number | null;
+  buyStats: QuoteStats;
+  sellStats: QuoteStats;
 }
 
 export async function analyzeAmount(
   pools: StockPool[],
   amountUsdg: number,
   fairPrice: number | null,
+  onProgress?: (msg: string) => void,
 ): Promise<AmountAnalysis> {
-  let [buyResult, sellResult] = await Promise.all([
-    quoteBestPool(pools, amountUsdg, 'buy'),
-    quoteBestPool(pools, amountUsdg, 'sell'),
+  const emptyStats: QuoteStats = { quotedCount: 0, failedCount: 0, failedPools: [], mainPoolFailed: false };
+
+  const [buyPoolResult, sellPoolResult] = await Promise.all([
+    quoteBestPool(pools, amountUsdg, 'buy', (done, total) =>
+      onProgress?.(`已报价 ${done}/${total} 池（买入）`),
+    ),
+    quoteBestPool(pools, amountUsdg, 'sell', (done, total) =>
+      onProgress?.(`已报价 ${done}/${total} 池（卖出）`),
+    ),
   ]);
 
-  if (!buyResult) buyResult = await quoteBestPool(pools, amountUsdg, 'buy');
-  if (!sellResult) sellResult = await quoteBestPool(pools, amountUsdg, 'sell');
+  const buyResult = buyPoolResult.best;
+  const sellResult = sellPoolResult.best;
+  const buyStats = buyPoolResult.stats ?? emptyStats;
+  const sellStats = sellPoolResult.stats ?? emptyStats;
 
   const midPrice = fairPrice;
 
@@ -468,5 +571,5 @@ export async function analyzeAmount(
     ? sellResult.effectivePrice / midPrice - 1
     : null;
 
-  return { buyResult, sellResult, buyPremium, sellPremium, midPrice };
+  return { buyResult, sellResult, buyPremium, sellPremium, midPrice, buyStats, sellStats };
 }

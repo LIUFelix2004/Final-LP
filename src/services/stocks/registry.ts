@@ -37,7 +37,33 @@ function getClient() {
   });
 }
 
-export async function enumerateOfficialTokens(): Promise<StockToken[]> {
+export interface RegistryResult {
+  tokens: StockToken[];
+  degraded: boolean;
+}
+
+const REGISTRY_RETRY_DELAYS = [2000, 5000, 10000];
+
+export async function enumerateOfficialTokens(): Promise<RegistryResult> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= REGISTRY_RETRY_DELAYS.length; attempt++) {
+    try {
+      const tokens = await enumerateOfficialTokensInner();
+      return { tokens, degraded: false };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < REGISTRY_RETRY_DELAYS.length) {
+        await new Promise(r => setTimeout(r, REGISTRY_RETRY_DELAYS[attempt]));
+      }
+    }
+  }
+
+  console.warn('[registry] all retries failed, returning SEED_STOCKS:', lastError?.message);
+  return { tokens: SEED_STOCKS, degraded: true };
+}
+
+async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
   const client = getClient();
 
   const logs = await client.getLogs({

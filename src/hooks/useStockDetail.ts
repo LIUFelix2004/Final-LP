@@ -101,6 +101,7 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
   });
   const [amountAnalysis, setAmountAnalysis] = useState<AmountAnalysis | null>(null);
   const [amountLoading, setAmountLoading] = useState(false);
+  const [amountProgress, setAmountProgress] = useState('');
   const amountTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const amountGenRef = useRef(0);
 
@@ -226,15 +227,19 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     amountTimerRef.current = setTimeout(async () => {
       if (gen !== amountGenRef.current) return;
       setAmountLoading(true);
+      setAmountProgress('');
       try {
-        const result = await analyzeAmount(selectedRow.pools, amountUsdg, fairResult?.fair ?? null);
+        const result = await analyzeAmount(
+          selectedRow.pools, amountUsdg, fairResult?.fair ?? null,
+          (msg) => { if (gen === amountGenRef.current) setAmountProgress(msg); },
+        );
         if (gen !== amountGenRef.current) return;
         setAmountAnalysis(result);
       } catch {
         if (gen !== amountGenRef.current) return;
         setAmountAnalysis(null);
       } finally {
-        if (gen === amountGenRef.current) setAmountLoading(false);
+        if (gen === amountGenRef.current) { setAmountLoading(false); setAmountProgress(''); }
       }
     }, 800);
 
@@ -258,6 +263,7 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     setAmountUsdg,
     amountAnalysis,
     amountLoading,
+    amountProgress,
     lastPerpSuccess,
   };
 }

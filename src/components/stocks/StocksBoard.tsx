@@ -33,6 +33,8 @@ export function StocksBoard({ onBack }: Props) {
     removeSymbol,
     registry,
     userAddedSymbols,
+    registryDegraded,
+    retryRegistry,
   } = useStocksBoard();
 
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(() => {
@@ -65,6 +67,7 @@ export function StocksBoard({ onBack }: Props) {
     setAmountUsdg,
     amountAnalysis,
     amountLoading,
+    amountProgress,
     lastPerpSuccess,
   } = useStockDetail(selectedRow, autoRefresh);
 
@@ -93,6 +96,12 @@ export function StocksBoard({ onBack }: Props) {
         amountUsdg={amountUsdg}
         onAmountChange={setAmountUsdg}
       />
+      {registryDegraded && (
+        <div className="stocks-error-bar">
+          代币列表加载失败，仅显示 {rows.length > 0 ? rows.length : 40} 个种子代币
+          <button className="stocks-retry-btn" onClick={() => retryRegistry().catch(() => {})}>重试</button>
+        </div>
+      )}
       {rows.length > 0 && (() => {
         const totalUnknown = rows.reduce((s, r) => s + r.feeUnknownCount, 0);
         if (totalUnknown === 0) return null;
@@ -139,6 +148,7 @@ export function StocksBoard({ onBack }: Props) {
               klineSource={klineSource}
               amountAnalysis={amountAnalysis}
               amountLoading={amountLoading}
+              amountProgress={amountProgress}
             />
           ) : (
             <div className="stocks-placeholder">

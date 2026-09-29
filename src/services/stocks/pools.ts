@@ -51,7 +51,6 @@ async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
         on429();
         lastError = new Error(`HTTP 429`);
         if (attempt < maxRetries) {
-          await sleep(dsGlobalPause.backoffMs);
           await waitForDsToken();
           continue;
         }
@@ -69,7 +68,6 @@ async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response> {
         on429();
         lastError = new Error('DexScreener CORS/网络错误 (视为 429)');
         if (attempt < maxRetries) {
-          await sleep(dsGlobalPause.backoffMs);
           await waitForDsToken();
           continue;
         }
@@ -208,6 +206,55 @@ export async function discoverPoolsForToken(
   }
 
   return filterAndSortPools(pools);
+}
+
+const DEXSCREENER_BATCH_API = `${DEXSCREENER_API}/tokens/v1/robinhood`;
+const DS_BATCH_SIZE = 30;
+
+export async function discoverPoolsBatch(
+  tokens: StockToken[],
+  signal?: AbortSignal,
+  onProgress?: (current: number, total: number) => void,
+): Promise<Map<string, StockPool[]>> {
+  const result = new Map<string, StockPool[]>();
+
+  for (let i = 0; i < tokens.length; i += DS_BATCH_SIZE) {
+    if (signal?.aborted) break;
+    const batch = tokens.slice(i, i + DS_BATCH_SIZE);
+    const addresses = batch.map(t => t.address).join(',');
+
+    try {
+      const resp = await fetchWithRetry(`${DEXSCREENER_BATCH_API}/${addresses}`);
+      if (signal?.aborted) break;
+      const pairs: DsPair[] = await resp.json();
+
+      for (const token of batch) {
+        const pools: StockPool[] = [];
+        const seen = new Set<string>();
+        for (const pair of pairs) {
+          const pool = pairToStockPool(pair, token.address);
+          if (pool && !seen.has(pool.pairAddress)) {
+            seen.add(pool.pairAddress);
+            pools.push(pool);
+          }
+        }
+        result.set(token.address.toLowerCase(), filterAndSortPools(pools));
+      }
+    } catch {
+      for (const token of batch) {
+        if (signal?.aborted) break;
+        try {
+          const pools = await discoverPoolsForToken(token, signal);
+          result.set(token.address.toLowerCase(), pools);
+        } catch { /* individual also failed */ }
+      }
+    }
+
+    onProgress?.(Math.min(i + DS_BATCH_SIZE, tokens.length), tokens.length);
+    if (i + DS_BATCH_SIZE < tokens.length) await sleep(200);
+  }
+
+  return result;
 }
 
 function filterAndSortPools(pools: StockPool[]): StockPool[] {

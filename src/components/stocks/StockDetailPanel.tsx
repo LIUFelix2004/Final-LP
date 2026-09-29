@@ -21,6 +21,7 @@ interface Props {
   klineSource: string | null;
   amountAnalysis: AmountAnalysis | null;
   amountLoading: boolean;
+  amountProgress: string;
 }
 
 function premiumBadge(premium: number | null): { text: string; cls: string } | null {
@@ -45,6 +46,7 @@ export function StockDetailPanel({
   klineSource,
   amountAnalysis,
   amountLoading,
+  amountProgress,
 }: Props) {
   const session = getUsMarketSession();
   const badge = premiumBadge(premium);
@@ -128,9 +130,12 @@ export function StockDetailPanel({
         <div className="stock-detail-section">
           <h3>金额分析</h3>
           {amountLoading ? (
-            <div className="detail-loading">模拟报价中...</div>
+            <div className="detail-loading">{amountProgress || '模拟报价中...'}</div>
           ) : amountAnalysis ? (
             <div className="amount-analysis">
+              {(amountAnalysis.buyStats?.mainPoolFailed || amountAnalysis.sellStats?.mainPoolFailed) && (
+                <div className="amount-row amount-fail">主池报价失败，结果可能非最优</div>
+              )}
               {amountAnalysis.buyResult && (
                 <div className="amount-row">
                   <span className="amount-label">买入有效价</span>
@@ -141,7 +146,7 @@ export function StockDetailPanel({
                     </span>
                   )}
                   <span className="amount-impact">
-                    滑点 {formatSignedPercent(amountAnalysis.buyResult.priceImpact)}
+                    成交偏离（含手续费） {formatSignedPercent(amountAnalysis.buyResult.priceImpact)}
                   </span>
                   <span className="amount-pool">
                     {amountAnalysis.buyResult.quotedVia}
@@ -149,6 +154,11 @@ export function StockDetailPanel({
                       <span className="amount-pool-note">（非主池）{amountAnalysis.buyResult.pool.pairAddress.slice(0, 10)}</span>
                     )}
                   </span>
+                </div>
+              )}
+              {amountAnalysis.buyStats && amountAnalysis.buyStats.failedCount > 0 && (
+                <div className="amount-row amount-fail">
+                  买入侧 {amountAnalysis.buyStats.failedCount}/{amountAnalysis.buyStats.quotedCount + amountAnalysis.buyStats.failedCount} 个池报价失败
                 </div>
               )}
               {amountAnalysis.sellResult && (
@@ -161,7 +171,7 @@ export function StockDetailPanel({
                     </span>
                   )}
                   <span className="amount-impact">
-                    滑点 {formatSignedPercent(amountAnalysis.sellResult.priceImpact)}
+                    成交偏离（含手续费） {formatSignedPercent(amountAnalysis.sellResult.priceImpact)}
                   </span>
                   <span className="amount-pool">
                     {amountAnalysis.sellResult.quotedVia}
@@ -171,12 +181,17 @@ export function StockDetailPanel({
                   </span>
                 </div>
               )}
-              {amountAnalysis.buyResult && !amountAnalysis.sellResult && (
+              {amountAnalysis.sellStats && amountAnalysis.sellStats.failedCount > 0 && (
+                <div className="amount-row amount-fail">
+                  卖出侧 {amountAnalysis.sellStats.failedCount}/{amountAnalysis.sellStats.quotedCount + amountAnalysis.sellStats.failedCount} 个池报价失败
+                </div>
+              )}
+              {amountAnalysis.buyResult && !amountAnalysis.sellResult && !amountAnalysis.sellStats?.failedCount && (
                 <div className="amount-row amount-fail">
                   <span className="amount-label">卖出报价失败</span>
                 </div>
               )}
-              {!amountAnalysis.buyResult && amountAnalysis.sellResult && (
+              {!amountAnalysis.buyResult && amountAnalysis.sellResult && !amountAnalysis.buyStats?.failedCount && (
                 <div className="amount-row amount-fail">
                   <span className="amount-label">买入报价失败</span>
                 </div>
