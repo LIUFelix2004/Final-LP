@@ -2,11 +2,11 @@ import { createPublicClient, http, encodeFunctionData, decodeFunctionResult, par
 import type { StockPool } from '../../types/stocks';
 import { USDG_ADDRESS, USDG_DECIMALS, V3_QUOTER_V2, V4_QUOTER, V4_POOL_MANAGER_ROBINHOOD, V4_POOL_MANAGER_DEPLOY_BLOCK, ROBINHOOD_CHAIN_ID } from '../../config/stocks';
 import { CHAINS } from '../../config/chains';
-import v4SnapshotJson from '../../config/v4-poolkeys.json';
 
 const STOCK_TOKEN_DECIMALS = 18;
 const SANITY_THRESHOLD = 0.10;
 const V4_KEY_SEGMENT_SIZE = 10_000_000n;
+const V4_OR_SEGMENT_SIZE = 100_000n;
 
 const RPC_MAX_CONCURRENCY = 4;
 let rpcInFlight = 0;
@@ -172,28 +172,53 @@ function isBlockRangeError(err: unknown): boolean {
   return msg.includes('-32602') || msg.includes('query spans') || msg.includes('block range');
 }
 
-function loadV4Snapshot(): Map<string, V4PoolKey> {
-  const map = new Map<string, V4PoolKey>();
-  try {
-    const snap = v4SnapshotJson as { keys: Record<string, { currency0: string; currency1: string; fee: number; tickSpacing: number; hooks: string }> };
-    for (const [poolId, entry] of Object.entries(snap.keys)) {
-      map.set(poolId.toLowerCase(), {
-        currency0: entry.currency0 as Address,
-        currency1: entry.currency1 as Address,
-        fee: entry.fee,
-        tickSpacing: entry.tickSpacing,
-        hooks: entry.hooks as Address,
-      });
-    }
-  } catch { /* empty snapshot */ }
-  return map;
+interface V4SnapshotData {
+  keys: Map<string, V4PoolKey>;
+  block: bigint;
 }
 
-const v4SnapshotKeys = loadV4Snapshot();
-const v4SnapshotBlock = BigInt((v4SnapshotJson as { snapshotBlock: number }).snapshotBlock || 0);
+let v4SnapshotData: V4SnapshotData | null = null;
+let v4SnapshotLoading: Promise<V4SnapshotData> | null = null;
 
-function loadV4PoolKeyCacheForPool(poolId: string): V4PoolKey | null {
-  const snapKey = v4SnapshotKeys.get(poolId.toLowerCase());
+async function ensureV4Snapshot(): Promise<V4SnapshotData> {
+  if (v4SnapshotData) return v4SnapshotData;
+  if (!v4SnapshotLoading) {
+    v4SnapshotLoading = (async () => {
+      try {
+        const resp = await fetch('/v4-poolkeys.json');
+        if (!resp.ok) throw new Error(`${resp.status}`);
+        const json = await resp.json();
+        const keys = new Map<string, V4PoolKey>();
+        for (const [poolId, entry] of Object.entries(json.keys ?? {})) {
+          const e = entry as { currency0: string; currency1: string; fee: number; tickSpacing: number; hooks: string };
+          keys.set(poolId.toLowerCase(), {
+            currency0: e.currency0 as Address,
+            currency1: e.currency1 as Address,
+            fee: e.fee,
+            tickSpacing: e.tickSpacing,
+            hooks: e.hooks as Address,
+          });
+        }
+        const block = keys.size > 0 ? BigInt(json.snapshotBlock || 0) : 0n;
+        v4SnapshotData = { keys, block };
+        return v4SnapshotData;
+      } catch {
+        v4SnapshotData = { keys: new Map(), block: 0n };
+        return v4SnapshotData;
+      }
+    })();
+  }
+  return v4SnapshotLoading;
+}
+
+export function resetV4Snapshot(): void {
+  v4SnapshotData = null;
+  v4SnapshotLoading = null;
+}
+
+async function loadV4PoolKeyCacheForPool(poolId: string): Promise<V4PoolKey | null> {
+  const snap = await ensureV4Snapshot();
+  const snapKey = snap.keys.get(poolId.toLowerCase());
   if (snapKey) return snapKey;
 
   try {
@@ -231,7 +256,7 @@ function saveV4PoolKeyToCache(poolId: string, key: V4PoolKey): void {
 }
 
 async function fetchV4PoolKeyForPool(poolId: string): Promise<V4PoolKey | null> {
-  const cached = loadV4PoolKeyCacheForPool(poolId);
+  const cached = await loadV4PoolKeyCacheForPool(poolId);
   if (cached) return cached;
   if (isNegativelyCached(poolId)) return null;
 
@@ -241,7 +266,7 @@ async function fetchV4PoolKeyForPool(poolId: string): Promise<V4PoolKey | null> 
   const promise = (async (): Promise<V4PoolKey | null> => {
     const client = getClient();
     const currentBlock = await client.getBlockNumber();
-    const fromBlock = v4SnapshotBlock > 0n ? v4SnapshotBlock : V4_POOL_MANAGER_DEPLOY_BLOCK;
+    const fromBlock = V4_POOL_MANAGER_DEPLOY_BLOCK;
 
     let cursor = fromBlock;
     while (cursor <= currentBlock) {
@@ -318,7 +343,7 @@ export async function fetchV4PoolKeys(poolIds: string[]): Promise<Map<string, V4
   const toFetch: string[] = [];
 
   for (const pid of poolIds) {
-    const cached = loadV4PoolKeyCacheForPool(pid);
+    const cached = await loadV4PoolKeyCacheForPool(pid);
     if (cached) {
       map.set(pid.toLowerCase(), cached);
     } else if (!isNegativelyCached(pid)) {
@@ -330,54 +355,69 @@ export async function fetchV4PoolKeys(poolIds: string[]): Promise<Map<string, V4
 
   const client = getClient();
   const currentBlock = await client.getBlockNumber();
-  const fromBlock = v4SnapshotBlock > 0n ? v4SnapshotBlock : V4_POOL_MANAGER_DEPLOY_BLOCK;
+  const snap = await ensureV4Snapshot();
+  const fromBlock = snap.block > 0n ? snap.block : V4_POOL_MANAGER_DEPLOY_BLOCK;
+  const span = currentBlock - fromBlock;
+  const useOrQuery = span <= V4_OR_SEGMENT_SIZE;
 
   const BATCH_SIZE = 20;
   for (let b = 0; b < toFetch.length; b += BATCH_SIZE) {
     const batchIds = toFetch.slice(b, b + BATCH_SIZE);
-    let cursor = fromBlock;
-    while (cursor <= currentBlock) {
-      const end = cursor + V4_KEY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + V4_KEY_SEGMENT_SIZE - 1n;
-      try {
-        const logs = await rpcThrottled(() => client.getLogs({
-          address: V4_POOL_MANAGER_ROBINHOOD as Address,
-          event: INITIALIZE_EVENT,
-          args: { id: batchIds.map(id => id as Hex) },
-          fromBlock: cursor,
-          toBlock: end,
-        }));
 
-        for (const log of logs) {
-          const args = log.args;
-          if (!args.id || !args.currency0 || !args.currency1) continue;
-          const pid = args.id.toLowerCase();
-          if (map.has(pid)) continue;
+    if (useOrQuery) {
+      let cursor = fromBlock;
+      while (cursor <= currentBlock) {
+        const end = cursor + V4_OR_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + V4_OR_SEGMENT_SIZE - 1n;
+        try {
+          const logs = await rpcThrottled(() => client.getLogs({
+            address: V4_POOL_MANAGER_ROBINHOOD as Address,
+            event: INITIALIZE_EVENT,
+            args: { id: batchIds.map(id => id as Hex) },
+            fromBlock: cursor,
+            toBlock: end,
+          }));
 
-          const key: V4PoolKey = {
-            currency0: args.currency0,
-            currency1: args.currency1,
-            fee: args.fee ?? 0,
-            tickSpacing: args.tickSpacing ?? 0,
-            hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
-          };
-          map.set(pid, key);
-          saveV4PoolKeyToCache(pid, key);
-        }
-      } catch (err) {
-        if (isBlockRangeError(err)) {
-          for (const pid of batchIds) {
-            if (!map.has(pid.toLowerCase())) {
-              try {
-                const key = await fetchV4PoolKeyForPool(pid);
-                if (key) map.set(pid.toLowerCase(), key);
-              } catch { /* individual fallback failed */ }
-            }
+          for (const log of logs) {
+            const args = log.args;
+            if (!args.id || !args.currency0 || !args.currency1) continue;
+            const pid = args.id.toLowerCase();
+            if (map.has(pid)) continue;
+
+            const key: V4PoolKey = {
+              currency0: args.currency0,
+              currency1: args.currency1,
+              fee: args.fee ?? 0,
+              tickSpacing: args.tickSpacing ?? 0,
+              hooks: (args.hooks ?? '0x0000000000000000000000000000000000000000') as Address,
+            };
+            map.set(pid, key);
+            saveV4PoolKeyToCache(pid, key);
           }
-          break;
+        } catch (err) {
+          if (isBlockRangeError(err)) {
+            for (const pid of batchIds) {
+              if (!map.has(pid.toLowerCase())) {
+                try {
+                  const key = await fetchV4PoolKeyForPool(pid);
+                  if (key) map.set(pid.toLowerCase(), key);
+                } catch { /* individual fallback failed */ }
+              }
+            }
+            break;
+          }
+          throw err;
         }
-        throw err;
+        cursor = end + 1n;
       }
-      cursor = end + 1n;
+    } else {
+      for (const pid of batchIds) {
+        if (!map.has(pid.toLowerCase())) {
+          try {
+            const key = await fetchV4PoolKeyForPool(pid);
+            if (key) map.set(pid.toLowerCase(), key);
+          } catch { /* individual fetch failed */ }
+        }
+      }
     }
   }
 
@@ -570,9 +610,15 @@ export async function quoteV4Pool(
 const QUOTE_CACHE_TTL_MS = 20_000;
 const quoteCache = new Map<string, { result: BestPoolResult; timestamp: number }>();
 
+function poolSignature(pool: StockPool): string {
+  const fee = pool.feeRate !== null && !pool.feeRateInferred ? pool.feeRate.toFixed(4) : '?';
+  return `${pool.pairAddress}:${fee}:${pool.version}`;
+}
+
 function getQuoteCacheKey(pools: StockPool[], amountUsdg: number, direction: string): string {
   const token = pools[0]?.tokenAddress ?? '';
-  return `${token}:${amountUsdg}:${direction}`;
+  const sig = pools.map(poolSignature).sort().join('|');
+  return `${token}:${amountUsdg}:${direction}:${sig}`;
 }
 
 export function clearQuoteCache(): void {

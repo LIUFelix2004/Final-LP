@@ -123,7 +123,7 @@ export function StocksBoard({ onBack }: Props) {
               registry={registry}
               onAdded={(token) => { discoverAndAddSymbol(token); }}
             />
-            <RegisterToken onRegistered={() => refresh()} />
+            <RegisterToken onRegistered={(token) => discoverAndAddSymbol(token)} />
           </div>
           <StockFeeList
             rows={rows}

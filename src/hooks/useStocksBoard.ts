@@ -8,7 +8,9 @@ import {
   loadUserTokens,
   mergeRegistries,
   removeUserToken,
-  type RegistryResult,
+  saveUserToken,
+  loadSnapshotTokens,
+  scanNewTokens,
 } from '../services/stocks/registry';
 import {
   discoverPoolsForToken,
@@ -119,13 +121,7 @@ export function useStocksBoard() {
       if (cached && cached.length > 0) {
         tokens = cached;
       } else {
-        const result: RegistryResult = await enumerateOfficialTokens();
-        tokens = result.tokens;
-        if (result.degraded) {
-          setRegistryDegraded(true);
-        } else {
-          saveRegistryCache(tokens);
-        }
+        tokens = loadSnapshotTokens();
       }
       if (cancelled) return;
 
@@ -175,6 +171,7 @@ export function useStocksBoard() {
         ];
 
         const abortController = new AbortController();
+        const enrichedInBatch = new Set<string>();
         const batchResults = await discoverPoolsBatch(
           prioritized,
           abortController.signal,
@@ -183,11 +180,26 @@ export function useStocksBoard() {
               setDiscoveryProgress({ current, total });
             }
           },
-          // M1: Progressive row rebuild after each batch completes
-          (partialResults) => {
+          async (partialResults) => {
             if (cancelled || gen !== discoveryGenRef.current) return;
+            const newPools: StockPool[] = [];
             for (const [addr, pools] of partialResults) {
               poolsRef.current.set(addr, pools);
+              for (const p of pools) {
+                if (p.feeRate === null && !enrichedInBatch.has(p.pairAddress)) {
+                  newPools.push(p);
+                }
+              }
+            }
+            if (newPools.length > 0) {
+              try {
+                const enriched = await enrichStockPoolFees(newPools);
+                const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
+                for (const [addr, pools] of poolsRef.current) {
+                  poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
+                }
+                for (const p of enriched) enrichedInBatch.add(p.pairAddress);
+              } catch { /* fee enrichment failed for batch, continue */ }
             }
             const rows = buildRows(tokens, poolsRef.current);
             setFeeRows(rows);
@@ -198,22 +210,9 @@ export function useStocksBoard() {
 
         if (cancelled || gen !== discoveryGenRef.current) return;
 
-        let allNeedFees: StockPool[] = [];
         for (const [addr, pools] of batchResults) {
           poolsRef.current.set(addr, pools);
-          allNeedFees.push(...pools.filter(p => p.feeRate === null));
-          poolCache.set(addr, { tokenAddress: tokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools, timestamp: Date.now() });
-        }
-
-        if (allNeedFees.length > 0 && !cancelled) {
-          const enriched = await enrichStockPoolFees(allNeedFees);
-          const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
-          for (const [addr, pools] of poolsRef.current) {
-            poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
-          }
-          for (const [addr, entry] of poolCache) {
-            poolCache.set(addr, { ...entry, pools: entry.pools.map(p => enrichedMap.get(p.pairAddress) ?? p) });
-          }
+          poolCache.set(addr, { tokenAddress: tokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools: poolsRef.current.get(addr) ?? pools, timestamp: Date.now() });
         }
 
         savePoolCache(poolCache);
@@ -225,6 +224,39 @@ export function useStocksBoard() {
         setLastUpdate(new Date());
       } else {
         setLoading(false);
+      }
+
+      if (cancelled) return;
+      if (!cached) {
+        try {
+          const knownAddrs = new Set(tokens.map(t => t.address.toLowerCase()));
+          const newTokens = await scanNewTokens(knownAddrs);
+          if (cancelled) return;
+          if (newTokens.length > 0) {
+            tokens = mergeRegistries(tokens, newTokens);
+            setRegistry(tokens);
+            saveRegistryCache(tokens);
+
+            const newNeedDiscovery = newTokens.filter(t => !poolsRef.current.has(t.address.toLowerCase()));
+            if (newNeedDiscovery.length > 0) {
+              const newResults = await discoverPoolsBatch(newNeedDiscovery);
+              if (cancelled) return;
+              const pc = loadPoolCache();
+              for (const [addr, pools] of newResults) {
+                poolsRef.current.set(addr, pools);
+                pc.set(addr, { tokenAddress: newTokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools, timestamp: Date.now() });
+              }
+              savePoolCache(pc);
+              setFeeRows(buildRows(tokens, poolsRef.current));
+              setLastUpdate(new Date());
+            }
+          } else {
+            saveRegistryCache(tokens);
+          }
+        } catch (err) {
+          console.warn('[registry] background scan failed:', err instanceof Error ? err.message : String(err));
+          setRegistryDegraded(true);
+        }
       }
     }
 
@@ -329,12 +361,17 @@ export function useStocksBoard() {
 
   const discoverAndAddSymbol = useCallback(async (token: StockToken) => {
     addSymbol(token.symbol);
+    saveUserToken(token);
+
+    setRegistry(prev => {
+      if (prev.some(t => t.address.toLowerCase() === token.address.toLowerCase())) return prev;
+      return [...prev, token];
+    });
 
     const addr = token.address.toLowerCase();
     const existing = poolsRef.current.get(addr);
     if (existing && existing.length > 0) {
-      // M4: rebuild with latest ref immediately
-      setFeeRows(buildRows(registry, poolsRef.current));
+      setFeeRows(buildRows([...registry, token], poolsRef.current));
       return;
     }
 
@@ -347,7 +384,7 @@ export function useStocksBoard() {
       poolCache.set(addr, { tokenAddress: token.address, pools: enriched, timestamp: Date.now() });
       savePoolCache(poolCache);
 
-      setFeeRows(buildRows(registry, poolsRef.current));
+      setFeeRows(buildRows([...registry, token], poolsRef.current));
     } catch {}
   }, [addSymbol, registry, buildRows]);
 

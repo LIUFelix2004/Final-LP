@@ -220,7 +220,7 @@ export async function discoverPoolsBatch(
   tokens: StockToken[],
   signal?: AbortSignal,
   onProgress?: (current: number, total: number) => void,
-  onBatchDone?: (results: Map<string, StockPool[]>) => void,
+  onBatchDone?: (results: Map<string, StockPool[]>) => void | Promise<void>,
 ): Promise<Map<string, StockPool[]>> {
   const result = new Map<string, StockPool[]>();
 
@@ -272,7 +272,7 @@ export async function discoverPoolsBatch(
     }
 
     onProgress?.(Math.min(i + DS_BATCH_SIZE, tokens.length), tokens.length);
-    onBatchDone?.(result);
+    await onBatchDone?.(result);
     if (i + DS_BATCH_SIZE < tokens.length) await sleep(200);
   }
 

@@ -20,7 +20,7 @@ vi.mock('viem', async () => {
 });
 
 import { createPublicClient } from 'viem';
-import { quoteV3Pool, quoteV4Pool, quoteBestPool, analyzeAmount, fetchV4PoolKeys, clearQuoteCache } from './quote';
+import { quoteV3Pool, quoteV4Pool, quoteBestPool, analyzeAmount, fetchV4PoolKeys, clearQuoteCache, resetV4Snapshot } from './quote';
 
 const TSLA_ADDR = '0x322f0929c4625ed5bad873c95208d54e1c003b2d';
 
@@ -767,6 +767,47 @@ describe('P5: all-failed results not cached', () => {
   });
 });
 
+describe('P3: OR query falls back to individual fetch when span > 100K blocks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearQuoteCache();
+    resetV4Snapshot();
+  });
+
+  it('uses individual fetchV4PoolKeyForPool when block span exceeds OR limit', async () => {
+    const mockGetLogs = vi.fn().mockResolvedValue([]);
+    const mockGetBlockNumber = vi.fn().mockResolvedValue(75_500_000n);
+    const mockCall = vi.fn();
+    const mockMulticall = vi.fn().mockResolvedValue([]);
+
+    (createPublicClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      call: mockCall,
+      getLogs: mockGetLogs,
+      getBlockNumber: mockGetBlockNumber,
+      multicall: mockMulticall,
+    });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ keys: {}, snapshotBlock: 0 }), { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const poolIds = ['0x' + 'ab'.repeat(32)];
+      const result = await fetchV4PoolKeys(poolIds);
+
+      expect(result.size).toBe(0);
+      expect(mockGetLogs).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          args: expect.objectContaining({ id: expect.any(Array) }),
+        }),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe('P6: escalating retry fires at 60/120/300s', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -776,34 +817,45 @@ describe('P6: escalating retry fires at 60/120/300s', () => {
     vi.useRealTimers();
   });
 
-  it('retryAttempt state drives repeated effect re-runs', async () => {
-    const mockRetryRegistry = vi.fn(async () => {});
+  it('fires retries at correct escalating delays', async () => {
+    const RETRY_DELAYS = [60_000, 120_000, 300_000];
+    const retryFn = vi.fn();
+    let attempt = 0;
 
-    const { useState, useEffect } = await import('react');
+    function scheduleRetry() {
+      if (attempt >= RETRY_DELAYS.length) return;
+      const delay = RETRY_DELAYS[attempt];
+      setTimeout(() => {
+        attempt++;
+        retryFn();
+        scheduleRetry();
+      }, delay);
+    }
 
-    const RETRY_DELAYS_LOCAL = [60_000, 120_000, 300_000];
+    scheduleRetry();
 
-    const states: number[] = [];
+    expect(retryFn).not.toHaveBeenCalled();
 
-    const TestHook = () => {
-      const [retryAttempt, setRetryAttempt] = useState(0);
-      states.push(retryAttempt);
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(retryFn).toHaveBeenCalledTimes(0);
 
-      useEffect(() => {
-        if (retryAttempt >= RETRY_DELAYS_LOCAL.length) return;
-        const delay = RETRY_DELAYS_LOCAL[retryAttempt];
-        const timer = setTimeout(() => {
-          setRetryAttempt(prev => prev + 1);
-          mockRetryRegistry();
-        }, delay);
-        return () => clearTimeout(timer);
-      }, [retryAttempt]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(retryFn).toHaveBeenCalledTimes(1);
 
-      return null;
-    };
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(retryFn).toHaveBeenCalledTimes(1);
 
-    expect(RETRY_DELAYS_LOCAL).toEqual([60_000, 120_000, 300_000]);
-    expect(TestHook).toBeDefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(retryFn).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(299_999);
+    expect(retryFn).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(retryFn).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(retryFn).toHaveBeenCalledTimes(3);
   });
 });
 

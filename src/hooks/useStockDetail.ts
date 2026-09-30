@@ -92,6 +92,11 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
   const selectedOnchainPrice = selectedRow?.onchainPrice ?? null;
   const selectedMainPoolLiq = selectedRow?.mainPool?.liquidityUsd ?? null;
 
+  const poolSignature = selectedRow?.pools.map(p => {
+    const fee = p.feeRate !== null && !p.feeRateInferred ? p.feeRate.toFixed(4) : '?';
+    return `${p.pairAddress}:${fee}`;
+  }).sort().join('|') ?? '';
+
   const [amountUsdg, setAmountUsdg] = useState(() => {
     try {
       const saved = localStorage.getItem('stocks-amount-usdg-v1');
@@ -246,7 +251,7 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
     return () => {
       if (amountTimerRef.current) clearTimeout(amountTimerRef.current);
     };
-  }, [selectedRow?.symbol, amountUsdg, fairResult?.fair]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedRow?.symbol, amountUsdg, fairResult?.fair, poolSignature]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     quotes,
