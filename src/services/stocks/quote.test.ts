@@ -808,7 +808,7 @@ describe('P3: OR query falls back to individual fetch when span > 100K blocks', 
   });
 });
 
-describe('P6: escalating retry fires at 60/120/300s', () => {
+describe('P6: escalating retry fires at 60/120/300s (scheduleRetries)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -817,22 +817,11 @@ describe('P6: escalating retry fires at 60/120/300s', () => {
     vi.useRealTimers();
   });
 
-  it('fires retries at correct escalating delays', async () => {
-    const RETRY_DELAYS = [60_000, 120_000, 300_000];
+  it('fires retries at correct escalating delays using exported scheduleRetries', async () => {
+    const { scheduleRetries, RETRY_DELAYS } = await import('../../hooks/useStocksBoard');
     const retryFn = vi.fn();
-    let attempt = 0;
 
-    function scheduleRetry() {
-      if (attempt >= RETRY_DELAYS.length) return;
-      const delay = RETRY_DELAYS[attempt];
-      setTimeout(() => {
-        attempt++;
-        retryFn();
-        scheduleRetry();
-      }, delay);
-    }
-
-    scheduleRetry();
+    const handle = scheduleRetries(RETRY_DELAYS, retryFn);
 
     expect(retryFn).not.toHaveBeenCalled();
 
@@ -856,6 +845,23 @@ describe('P6: escalating retry fires at 60/120/300s', () => {
 
     await vi.advanceTimersByTimeAsync(600_000);
     expect(retryFn).toHaveBeenCalledTimes(3);
+
+    handle.cancel();
+  });
+
+  it('cancel() stops pending retries', async () => {
+    const { scheduleRetries, RETRY_DELAYS } = await import('../../hooks/useStocksBoard');
+    const retryFn = vi.fn();
+
+    const handle = scheduleRetries(RETRY_DELAYS, retryFn);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(retryFn).toHaveBeenCalledTimes(1);
+
+    handle.cancel();
+
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(retryFn).toHaveBeenCalledTimes(1);
   });
 });
 

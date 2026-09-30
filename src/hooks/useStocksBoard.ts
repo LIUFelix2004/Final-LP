@@ -24,7 +24,48 @@ import {
 import { enrichStockPoolFees } from '../services/stocks/poolFees';
 import { recordSample, enrichRowsWithSampled } from '../services/stocks/feeSampler';
 
-const RETRY_DELAYS = [60_000, 120_000, 300_000];
+export const RETRY_DELAYS = [60_000, 120_000, 300_000];
+
+export function scheduleRetries(
+  delays: number[],
+  onRetry: () => void,
+): { cancel: () => void } {
+  let attempt = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  function schedule() {
+    if (attempt >= delays.length) return;
+    timer = setTimeout(() => {
+      attempt++;
+      onRetry();
+      schedule();
+    }, delays[attempt]);
+  }
+
+  schedule();
+
+  return {
+    cancel: () => { if (timer) clearTimeout(timer); },
+  };
+}
+
+function mergePoolsPreservingEnriched(
+  existing: Map<string, StockPool[]>,
+  incoming: Map<string, StockPool[]>,
+): void {
+  for (const [addr, newPools] of incoming) {
+    const current = existing.get(addr);
+    if (!current) {
+      existing.set(addr, newPools);
+      continue;
+    }
+    const enrichedMap = new Map<string, StockPool>();
+    for (const p of current) {
+      if (p.feeRate !== null) enrichedMap.set(p.pairAddress, p);
+    }
+    existing.set(addr, newPools.map(p => enrichedMap.get(p.pairAddress) ?? p));
+  }
+}
 
 export function useStocksBoard() {
   const [registry, setRegistry] = useState<StockToken[]>([]);
@@ -61,7 +102,6 @@ export function useStocksBoard() {
   const userAddedSymbolsRef = useRef(userAddedSymbols);
   const [retryAttempt, setRetryAttempt] = useState(0);
 
-  // M4: keep ref in sync so buildRows always sees latest
   useEffect(() => {
     userAddedSymbolsRef.current = userAddedSymbols;
   }, [userAddedSymbols]);
@@ -160,6 +200,12 @@ export function useStocksBoard() {
         setLastUpdate(new Date());
       }
 
+      // M5: render placeholder rows immediately even without pool data
+      if (poolsRef.current.size === 0 && needsDiscovery.length > 0) {
+        setFeeRows(buildRows(tokens, poolsRef.current));
+        setLoading(false);
+      }
+
       if (needsDiscovery.length > 0) {
         setDiscovering(true);
         setDiscoveryProgress({ current: 0, total: needsDiscovery.length });
@@ -171,8 +217,8 @@ export function useStocksBoard() {
         ];
 
         const abortController = new AbortController();
-        const enrichedInBatch = new Set<string>();
-        const batchResults = await discoverPoolsBatch(
+        let lastBatchSize = 0;
+        await discoverPoolsBatch(
           prioritized,
           abortController.signal,
           (current, total) => {
@@ -180,53 +226,76 @@ export function useStocksBoard() {
               setDiscoveryProgress({ current, total });
             }
           },
-          async (partialResults) => {
+          async (cumulativeResults) => {
             if (cancelled || gen !== discoveryGenRef.current) return;
-            const newPools: StockPool[] = [];
-            for (const [addr, pools] of partialResults) {
-              poolsRef.current.set(addr, pools);
-              for (const p of pools) {
-                if (p.feeRate === null && !enrichedInBatch.has(p.pairAddress)) {
-                  newPools.push(p);
-                }
+
+            // M3: only process new entries from this batch, preserving enriched pools
+            const newInBatch: StockPool[] = [];
+            for (const [addr, pools] of cumulativeResults) {
+              const existing = poolsRef.current.get(addr);
+              if (!existing) {
+                poolsRef.current.set(addr, pools);
+                newInBatch.push(...pools.filter(p => p.feeRate === null));
               }
             }
-            if (newPools.length > 0) {
+
+            // M5/P5: enrich new pools immediately
+            if (newInBatch.length > 0) {
               try {
-                const enriched = await enrichStockPoolFees(newPools);
+                const enriched = await enrichStockPoolFees(newInBatch);
                 const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
                 for (const [addr, pools] of poolsRef.current) {
                   poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
                 }
-                for (const p of enriched) enrichedInBatch.add(p.pairAddress);
               } catch { /* fee enrichment failed for batch, continue */ }
             }
+
+            // M4: save cache incrementally after each batch
+            if (cumulativeResults.size > lastBatchSize) {
+              lastBatchSize = cumulativeResults.size;
+              const pc = loadPoolCache();
+              for (const [addr, _pools] of cumulativeResults) {
+                const enrichedPools = poolsRef.current.get(addr) ?? _pools;
+                pc.set(addr, {
+                  tokenAddress: tokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr,
+                  pools: enrichedPools,
+                  timestamp: Date.now(),
+                });
+              }
+              savePoolCache(pc);
+            }
+
             const rows = buildRows(tokens, poolsRef.current);
             setFeeRows(rows);
-            if (loading) setLoading(false);
             setLastUpdate(new Date());
           },
         );
 
         if (cancelled || gen !== discoveryGenRef.current) return;
 
-        for (const [addr, pools] of batchResults) {
-          poolsRef.current.set(addr, pools);
-          poolCache.set(addr, { tokenAddress: tokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools: poolsRef.current.get(addr) ?? pools, timestamp: Date.now() });
+        // M3: final save — use enriched pools from poolsRef, don't overwrite
+        const finalCache = loadPoolCache();
+        for (const [addr] of poolsRef.current) {
+          const enrichedPools = poolsRef.current.get(addr)!;
+          finalCache.set(addr, {
+            tokenAddress: tokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr,
+            pools: enrichedPools,
+            timestamp: Date.now(),
+          });
         }
+        savePoolCache(finalCache);
 
-        savePoolCache(poolCache);
         const rows = buildRows(tokens, poolsRef.current);
         setFeeRows(rows);
 
         setDiscovering(false);
-        if (loading) setLoading(false);
         setLastUpdate(new Date());
-      } else {
+      } else if (loading) {
         setLoading(false);
       }
 
       if (cancelled) return;
+      // Background registry scan for new tokens
       if (!cached) {
         try {
           const knownAddrs = new Set(tokens.map(t => t.address.toLowerCase()));
@@ -241,9 +310,27 @@ export function useStocksBoard() {
             if (newNeedDiscovery.length > 0) {
               const newResults = await discoverPoolsBatch(newNeedDiscovery);
               if (cancelled) return;
+
+              // M6: enrich fees for background-scan tokens
+              mergePoolsPreservingEnriched(poolsRef.current, newResults);
+              let needFees: StockPool[] = [];
+              for (const [addr] of newResults) {
+                const pools = poolsRef.current.get(addr);
+                if (pools) needFees.push(...pools.filter(p => p.feeRate === null));
+              }
+              if (needFees.length > 0) {
+                try {
+                  const enriched = await enrichStockPoolFees(needFees);
+                  const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
+                  for (const [addr, pools] of poolsRef.current) {
+                    poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
+                  }
+                } catch { /* enrichment failed */ }
+              }
+
               const pc = loadPoolCache();
-              for (const [addr, pools] of newResults) {
-                poolsRef.current.set(addr, pools);
+              for (const [addr] of newResults) {
+                const pools = poolsRef.current.get(addr) ?? [];
                 pc.set(addr, { tokenAddress: newTokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools, timestamp: Date.now() });
               }
               savePoolCache(pc);
@@ -308,11 +395,11 @@ export function useStocksBoard() {
           const batchResults = await discoverPoolsBatch(newTokens);
           const poolCache = loadPoolCache();
 
+          mergePoolsPreservingEnriched(poolsRef.current, batchResults);
           let allNeedFees: StockPool[] = [];
-          for (const [addr, pools] of batchResults) {
-            poolsRef.current.set(addr, pools);
-            allNeedFees.push(...pools.filter(p => p.feeRate === null));
-            poolCache.set(addr, { tokenAddress: newTokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools, timestamp: Date.now() });
+          for (const [addr] of batchResults) {
+            const pools = poolsRef.current.get(addr);
+            if (pools) allNeedFees.push(...pools.filter(p => p.feeRate === null));
           }
 
           if (allNeedFees.length > 0) {
@@ -321,11 +408,12 @@ export function useStocksBoard() {
             for (const [addr, pools] of poolsRef.current) {
               poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
             }
-            for (const [addr, entry] of poolCache) {
-              poolCache.set(addr, { ...entry, pools: entry.pools.map(p => enrichedMap.get(p.pairAddress) ?? p) });
-            }
           }
 
+          for (const [addr] of batchResults) {
+            const pools = poolsRef.current.get(addr) ?? [];
+            poolCache.set(addr, { tokenAddress: newTokens.find(t => t.address.toLowerCase() === addr)?.address ?? addr, pools, timestamp: Date.now() });
+          }
           savePoolCache(poolCache);
         }
         const rows = buildRows(merged, poolsRef.current);

@@ -53,11 +53,17 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function isLimitError(err: unknown): boolean {
+  const msg = String(err);
+  return msg.includes('exceeds limit') || msg.includes('query spans') || msg.includes('-32602') || msg.includes('block range');
+}
+
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       return await fn();
     } catch (err) {
+      if (isLimitError(err)) throw err;
       const msg = String(err);
       const is429 = msg.includes('429') || msg.includes('Too Many');
       if (attempt < MAX_RETRIES && (is429 || msg.includes('Failed to fetch'))) {
@@ -122,34 +128,32 @@ async function main() {
     console.log(`Resuming from block ${startBlock} with ${allKeys.size} keys`);
   }
 
-  for (const currencyFilter of ['currency0', 'currency1'] as const) {
-    let cursor = startBlock;
-    while (cursor <= currentBlock) {
-      const end = cursor + SINGLE_TOPIC_SEGMENT - 1n > currentBlock ? currentBlock : cursor + SINGLE_TOPIC_SEGMENT - 1n;
-      const args = currencyFilter === 'currency0'
-        ? { currency0: USDG_ADDRESS as Address }
-        : { currency1: USDG_ADDRESS as Address };
-
+  async function scanRange(
+    from: bigint,
+    to: bigint,
+    args: { currency0: Address } | { currency1: Address },
+    label: string,
+  ): Promise<void> {
+    if (from > to) return;
+    try {
       const logs = await withRetry(
         () => client.getLogs({
           address: POOL_MANAGER as Address,
           event: INITIALIZE_EVENT,
           args,
-          fromBlock: cursor,
-          toBlock: end,
+          fromBlock: from,
+          toBlock: to,
         }),
-        `getLogs ${currencyFilter} ${cursor}-${end}`,
+        `getLogs ${label} ${from}-${to}`,
       );
 
       for (const log of logs) {
         const { id, currency0, currency1, fee, tickSpacing, hooks } = log.args;
         if (!id || !currency0 || !currency1) continue;
-
         const c0 = currency0.toLowerCase();
         const c1 = currency1.toLowerCase();
         const otherToken = c0 === USDG_ADDRESS ? c1 : c0;
         if (!tokenAddresses.has(otherToken)) continue;
-
         allKeys.set(id.toLowerCase(), {
           currency0,
           currency1,
@@ -158,13 +162,32 @@ async function main() {
           hooks: hooks ?? '0x0000000000000000000000000000000000000000',
         });
       }
-
-      if (Number(cursor) % 10_000_000 === 0 || end === currentBlock) {
-        console.log(`Scanned ${currencyFilter} to block ${end}, found ${allKeys.size} USDG V4 pool keys`);
-        saveCheckpoint(allKeys, currencyFilter === 'currency1' ? end : startBlock > 0n ? startBlock - 1n : 0n);
-      }
-      cursor = end + 1n;
       await sleep(INTER_REQUEST_DELAY_MS);
+    } catch (err) {
+      if (isLimitError(err) && to - from > 1000n) {
+        const mid = from + (to - from) / 2n;
+        console.log(`  Binary split ${label} ${from}-${to} → ${from}-${mid} + ${mid + 1n}-${to}`);
+        await scanRange(from, mid, args, label);
+        await scanRange(mid + 1n, to, args, label);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  for (const currencyFilter of ['currency0', 'currency1'] as const) {
+    let cursor = startBlock;
+    while (cursor <= currentBlock) {
+      const end = cursor + SINGLE_TOPIC_SEGMENT - 1n > currentBlock ? currentBlock : cursor + SINGLE_TOPIC_SEGMENT - 1n;
+      const args = currencyFilter === 'currency0'
+        ? { currency0: USDG_ADDRESS as Address }
+        : { currency1: USDG_ADDRESS as Address };
+
+      await scanRange(cursor, end, args, currencyFilter);
+
+      console.log(`Scanned ${currencyFilter} to block ${end}, found ${allKeys.size} USDG V4 pool keys`);
+      saveCheckpoint(allKeys, end);
+      cursor = end + 1n;
     }
   }
 
@@ -213,8 +236,9 @@ async function main() {
   console.log(`Verified ${verified.size} active pool keys`);
 
   const keys: Record<string, PoolKeyEntry> = {};
-  for (const [poolId, entry] of verified) {
-    keys[poolId] = entry;
+  const sortedIds = [...verified.keys()].sort();
+  for (const poolId of sortedIds) {
+    keys[poolId] = verified.get(poolId)!;
   }
 
   const output = {

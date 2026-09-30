@@ -266,7 +266,8 @@ async function fetchV4PoolKeyForPool(poolId: string): Promise<V4PoolKey | null> 
   const promise = (async (): Promise<V4PoolKey | null> => {
     const client = getClient();
     const currentBlock = await client.getBlockNumber();
-    const fromBlock = V4_POOL_MANAGER_DEPLOY_BLOCK;
+    const snap = await ensureV4Snapshot();
+    const fromBlock = snap.block > 0n ? snap.block + 1n : V4_POOL_MANAGER_DEPLOY_BLOCK;
 
     let cursor = fromBlock;
     while (cursor <= currentBlock) {
@@ -416,6 +417,7 @@ export async function fetchV4PoolKeys(poolIds: string[]): Promise<Map<string, V4
             const key = await fetchV4PoolKeyForPool(pid);
             if (key) map.set(pid.toLowerCase(), key);
           } catch { /* individual fetch failed */ }
+          await new Promise(r => setTimeout(r, 200));
         }
       }
     }
