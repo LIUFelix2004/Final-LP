@@ -13,6 +13,7 @@ const RPC_URL = 'https://rpc.mainnet.chain.robinhood.com';
 const SINGLE_TOPIC_SEGMENT = 10_000_000n;
 const MAX_RETRIES = 5;
 const INTER_REQUEST_DELAY_MS = 100;
+const VERIFY_RETRY_COUNT = 3;
 
 const INITIALIZE_EVENT = parseAbiItem(
   'event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)'
@@ -78,9 +79,11 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   throw new Error(`${label}: retries exhausted`);
 }
 
+// N3: checkpoint tracks phase (currency0/currency1) separately
 interface CheckpointData {
   keys: Record<string, PoolKeyEntry>;
-  lastBlock: number;
+  currency0LastBlock: number;
+  currency1LastBlock: number;
 }
 
 const CHECKPOINT_PATH = resolve(__dirname, '../.snapshot-v4-checkpoint.json');
@@ -88,14 +91,22 @@ const CHECKPOINT_PATH = resolve(__dirname, '../.snapshot-v4-checkpoint.json');
 function loadCheckpoint(): CheckpointData | null {
   try {
     if (!existsSync(CHECKPOINT_PATH)) return null;
-    return JSON.parse(readFileSync(CHECKPOINT_PATH, 'utf-8'));
+    const raw = JSON.parse(readFileSync(CHECKPOINT_PATH, 'utf-8'));
+    // Migrate old format
+    if ('lastBlock' in raw && !('currency0LastBlock' in raw)) {
+      return { keys: raw.keys, currency0LastBlock: raw.lastBlock, currency1LastBlock: -1 };
+    }
+    return raw;
   } catch { return null; }
 }
 
-function saveCheckpoint(keys: Map<string, PoolKeyEntry>, lastBlock: bigint): void {
+function saveCheckpoint(keys: Map<string, PoolKeyEntry>, phase: 'currency0' | 'currency1', lastBlock: bigint, otherPhaseBlock: number): void {
   const obj: Record<string, PoolKeyEntry> = {};
   for (const [k, v] of keys) obj[k] = v;
-  writeFileSync(CHECKPOINT_PATH, JSON.stringify({ keys: obj, lastBlock: Number(lastBlock) }) + '\n');
+  const data: CheckpointData = phase === 'currency0'
+    ? { keys: obj, currency0LastBlock: Number(lastBlock), currency1LastBlock: otherPhaseBlock }
+    : { keys: obj, currency0LastBlock: otherPhaseBlock, currency1LastBlock: Number(lastBlock) };
+  writeFileSync(CHECKPOINT_PATH, JSON.stringify(data) + '\n');
 }
 
 function computePoolId(key: PoolKeyEntry): string {
@@ -123,9 +134,10 @@ async function main() {
   const allKeys = new Map<string, PoolKeyEntry>(
     checkpoint ? Object.entries(checkpoint.keys) : []
   );
-  let startBlock = checkpoint ? BigInt(checkpoint.lastBlock) + 1n : 0n;
-  if (startBlock > 0n) {
-    console.log(`Resuming from block ${startBlock} with ${allKeys.size} keys`);
+  const c0Start = checkpoint ? BigInt(checkpoint.currency0LastBlock) + 1n : 0n;
+  const c1Start = checkpoint ? BigInt(checkpoint.currency1LastBlock) + 1n : 0n;
+  if (checkpoint) {
+    console.log(`Resuming with ${allKeys.size} keys, currency0 from ${c0Start}, currency1 from ${c1Start}`);
   }
 
   async function scanRange(
@@ -175,18 +187,27 @@ async function main() {
     }
   }
 
-  for (const currencyFilter of ['currency0', 'currency1'] as const) {
+  // N3: scan each phase independently with separate start blocks
+  const phases: Array<{ filter: 'currency0' | 'currency1'; startBlock: bigint }> = [
+    { filter: 'currency0', startBlock: c0Start > currentBlock ? currentBlock + 1n : c0Start },
+    { filter: 'currency1', startBlock: c1Start > currentBlock ? currentBlock + 1n : c1Start },
+  ];
+
+  for (const { filter, startBlock } of phases) {
     let cursor = startBlock;
+    const otherPhaseBlock = filter === 'currency0'
+      ? (checkpoint?.currency1LastBlock ?? -1)
+      : Number(currentBlock);
     while (cursor <= currentBlock) {
       const end = cursor + SINGLE_TOPIC_SEGMENT - 1n > currentBlock ? currentBlock : cursor + SINGLE_TOPIC_SEGMENT - 1n;
-      const args = currencyFilter === 'currency0'
+      const args = filter === 'currency0'
         ? { currency0: USDG_ADDRESS as Address }
         : { currency1: USDG_ADDRESS as Address };
 
-      await scanRange(cursor, end, args, currencyFilter);
+      await scanRange(cursor, end, args, filter);
 
-      console.log(`Scanned ${currencyFilter} to block ${end}, found ${allKeys.size} USDG V4 pool keys`);
-      saveCheckpoint(allKeys, end);
+      console.log(`Scanned ${filter} to block ${end}, found ${allKeys.size} USDG V4 pool keys`);
+      saveCheckpoint(allKeys, filter, end, otherPhaseBlock);
       cursor = end + 1n;
     }
   }
@@ -196,6 +217,11 @@ async function main() {
   const poolIds = [...allKeys.keys()];
   const verified = new Map<string, PoolKeyEntry>();
   let mismatchCount = 0;
+  let failedCount = 0;
+  let zeroCount = 0;
+
+  // N4: collect failed pool IDs for retry
+  const failedPoolIds: string[] = [];
 
   for (let i = 0; i < poolIds.length; i += 20) {
     const batch = poolIds.slice(i, i + 20);
@@ -223,17 +249,64 @@ async function main() {
         const sqrtPriceX96 = r.result[0] as bigint;
         if (sqrtPriceX96 !== 0n) {
           verified.set(batch[j], entry);
+        } else {
+          zeroCount++;
         }
+      } else {
+        failedPoolIds.push(batch[j]);
       }
     }
     console.log(`Verified ${Math.min(i + 20, poolIds.length)}/${poolIds.length}`);
     await sleep(INTER_REQUEST_DELAY_MS);
   }
 
+  // N4: retry failed multicall entries individually
+  if (failedPoolIds.length > 0) {
+    console.log(`Retrying ${failedPoolIds.length} failed slot0 calls individually...`);
+    for (const poolId of failedPoolIds) {
+      const entry = allKeys.get(poolId)!;
+      let succeeded = false;
+      for (let attempt = 0; attempt < VERIFY_RETRY_COUNT; attempt++) {
+        try {
+          const result = await withRetry(
+            () => client.readContract({
+              address: STATE_VIEW as Address,
+              abi: SLOT0_ABI,
+              functionName: 'getSlot0',
+              args: [poolId as Hex],
+            }),
+            `getSlot0 retry ${poolId.slice(0, 10)} attempt ${attempt}`,
+          );
+          const sqrtPriceX96 = (result as readonly [bigint, number, number, number])[0];
+          if (sqrtPriceX96 !== 0n) {
+            verified.set(poolId, entry);
+          } else {
+            zeroCount++;
+          }
+          succeeded = true;
+          break;
+        } catch {
+          await sleep(1000 * 2 ** attempt);
+        }
+      }
+      if (!succeeded) {
+        failedCount++;
+      }
+      await sleep(INTER_REQUEST_DELAY_MS);
+    }
+  }
+
+  // N4: print summary counts
+  console.log(`\nSummary:`);
+  console.log(`  Found:    ${allKeys.size}`);
+  console.log(`  Verified: ${verified.size}`);
+  console.log(`  Zero:     ${zeroCount}`);
+  console.log(`  Mismatch: ${mismatchCount}`);
+  console.log(`  Failed:   ${failedCount}`);
+
   if (mismatchCount > 0) {
     console.warn(`${mismatchCount} poolId mismatches detected (event id ≠ recomputed)`);
   }
-  console.log(`Verified ${verified.size} active pool keys`);
 
   const keys: Record<string, PoolKeyEntry> = {};
   const sortedIds = [...verified.keys()].sort();
@@ -255,6 +328,12 @@ async function main() {
   console.log(`Wrote ${verified.size} keys to ${outPath}`);
 
   try { const fs = await import('fs'); fs.unlinkSync(CHECKPOINT_PATH); } catch {}
+
+  // N4: exit non-zero if any verifications permanently failed
+  if (failedCount > 0) {
+    console.error(`${failedCount} pool keys failed verification after retries — output may be incomplete`);
+    process.exit(1);
+  }
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

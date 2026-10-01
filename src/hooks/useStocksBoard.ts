@@ -11,6 +11,7 @@ import {
   saveUserToken,
   loadSnapshotTokens,
   scanNewTokens,
+  getSnapshotTokenCount,
 } from '../services/stocks/registry';
 import {
   discoverPoolsForToken,
@@ -49,7 +50,7 @@ export function scheduleRetries(
   };
 }
 
-function mergePoolsPreservingEnriched(
+export function mergePoolsPreservingEnriched(
   existing: Map<string, StockPool[]>,
   incoming: Map<string, StockPool[]>,
 ): void {
@@ -100,20 +101,28 @@ export function useStocksBoard() {
   const poolsRef = useRef<Map<string, StockPool[]>>(new Map());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const userAddedSymbolsRef = useRef(userAddedSymbols);
-  const [retryAttempt, setRetryAttempt] = useState(0);
+  const retryHandleRef = useRef<{ cancel: () => void } | null>(null);
+  const [, setRetryAttempt] = useState(0);
+  const discoveringRef = useRef(false);
 
   useEffect(() => {
     userAddedSymbolsRef.current = userAddedSymbols;
   }, [userAddedSymbols]);
 
-  const buildRows = useCallback((tokens: StockToken[], allPools: Map<string, StockPool[]>): StockFeeRow[] => {
+  const buildRows = useCallback((
+    tokens: StockToken[],
+    allPools: Map<string, StockPool[]>,
+    opts?: { showPlaceholders?: boolean },
+  ): StockFeeRow[] => {
     const currentSymbols = userAddedSymbolsRef.current;
+    const showPlaceholders = opts?.showPlaceholders ?? false;
     const rows: StockFeeRow[] = [];
     for (const token of tokens) {
       const pools = allPools.get(token.address.toLowerCase()) ?? [];
-      if (pools.length === 0 && !currentSymbols.has(token.symbol)) continue;
+      if (pools.length === 0 && !currentSymbols.has(token.symbol) && !showPlaceholders) continue;
       rows.push(buildFeeRow(token, pools));
     }
+    if (showPlaceholders) return rows;
     return rows.filter(r =>
       (r.fee.h24 !== null && r.fee.h24 > 0) ||
       (r.pools.some(p => (p.volume.h24 ?? 0) >= HOT_MIN_VOLUME_24H)) ||
@@ -200,14 +209,15 @@ export function useStocksBoard() {
         setLastUpdate(new Date());
       }
 
-      // M5: render placeholder rows immediately even without pool data
+      // N5: render placeholder rows immediately when discovery needed
       if (poolsRef.current.size === 0 && needsDiscovery.length > 0) {
-        setFeeRows(buildRows(tokens, poolsRef.current));
+        setFeeRows(buildRows(tokens, poolsRef.current, { showPlaceholders: true }));
         setLoading(false);
       }
 
       if (needsDiscovery.length > 0) {
         setDiscovering(true);
+        discoveringRef.current = true;
         setDiscoveryProgress({ current: 0, total: needsDiscovery.length });
 
         const seedAddrs = new Set(SEED_STOCKS.map(s => s.address.toLowerCase()));
@@ -229,7 +239,6 @@ export function useStocksBoard() {
           async (cumulativeResults) => {
             if (cancelled || gen !== discoveryGenRef.current) return;
 
-            // M3: only process new entries from this batch, preserving enriched pools
             const newInBatch: StockPool[] = [];
             for (const [addr, pools] of cumulativeResults) {
               const existing = poolsRef.current.get(addr);
@@ -239,7 +248,6 @@ export function useStocksBoard() {
               }
             }
 
-            // M5/P5: enrich new pools immediately
             if (newInBatch.length > 0) {
               try {
                 const enriched = await enrichStockPoolFees(newInBatch);
@@ -250,7 +258,6 @@ export function useStocksBoard() {
               } catch { /* fee enrichment failed for batch, continue */ }
             }
 
-            // M4: save cache incrementally after each batch
             if (cumulativeResults.size > lastBatchSize) {
               lastBatchSize = cumulativeResults.size;
               const pc = loadPoolCache();
@@ -265,7 +272,8 @@ export function useStocksBoard() {
               savePoolCache(pc);
             }
 
-            const rows = buildRows(tokens, poolsRef.current);
+            // N5: during discovery, include placeholder rows for undiscovered tokens
+            const rows = buildRows(tokens, poolsRef.current, { showPlaceholders: true });
             setFeeRows(rows);
             setLastUpdate(new Date());
           },
@@ -273,7 +281,6 @@ export function useStocksBoard() {
 
         if (cancelled || gen !== discoveryGenRef.current) return;
 
-        // M3: final save — use enriched pools from poolsRef, don't overwrite
         const finalCache = loadPoolCache();
         for (const [addr] of poolsRef.current) {
           const enrichedPools = poolsRef.current.get(addr)!;
@@ -285,10 +292,12 @@ export function useStocksBoard() {
         }
         savePoolCache(finalCache);
 
+        // Discovery done: now filter with normal rules (no placeholders)
         const rows = buildRows(tokens, poolsRef.current);
         setFeeRows(rows);
 
         setDiscovering(false);
+        discoveringRef.current = false;
         setLastUpdate(new Date());
       } else if (loading) {
         setLoading(false);
@@ -311,7 +320,6 @@ export function useStocksBoard() {
               const newResults = await discoverPoolsBatch(newNeedDiscovery);
               if (cancelled) return;
 
-              // M6: enrich fees for background-scan tokens
               mergePoolsPreservingEnriched(poolsRef.current, newResults);
               let needFees: StockPool[] = [];
               for (const [addr] of newResults) {
@@ -342,13 +350,18 @@ export function useStocksBoard() {
           }
         } catch (err) {
           console.warn('[registry] background scan failed:', err instanceof Error ? err.message : String(err));
-          setRegistryDegraded(true);
+          // N2: only show degraded if snapshot is small (not the full 200+ token snapshot)
+          const snapCount = getSnapshotTokenCount();
+          if (snapCount < 100) {
+            setRegistryDegraded(true);
+          }
         }
       }
     }
 
     init().catch(() => {
       setDiscovering(false);
+      discoveringRef.current = false;
       setLoading(false);
     });
     return () => { cancelled = true; };
@@ -425,19 +438,27 @@ export function useStocksBoard() {
     }
   }, [buildRows]);
 
+  // N6: use scheduleRetries for retry logic
   useEffect(() => {
+    if (retryHandleRef.current) {
+      retryHandleRef.current.cancel();
+      retryHandleRef.current = null;
+    }
     if (!registryDegraded) {
       setRetryAttempt(0);
       return;
     }
-    if (retryAttempt >= RETRY_DELAYS.length) return;
-    const delay = RETRY_DELAYS[retryAttempt];
-    const timer = setTimeout(() => {
+    retryHandleRef.current = scheduleRetries(RETRY_DELAYS, () => {
       setRetryAttempt(prev => prev + 1);
       retryRegistry().catch(() => {});
-    }, delay);
-    return () => clearTimeout(timer);
-  }, [registryDegraded, retryAttempt, retryRegistry]);
+    });
+    return () => {
+      if (retryHandleRef.current) {
+        retryHandleRef.current.cancel();
+        retryHandleRef.current = null;
+      }
+    };
+  }, [registryDegraded, retryRegistry]);
 
   const addSymbol = useCallback((symbol: string) => {
     setUserAddedSymbols(prev => {

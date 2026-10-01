@@ -12,6 +12,8 @@ import snapshotJson from '../../config/stock-registry.json';
 
 const REGISTRY_SEGMENT_SIZE = 30000n;
 const SCAN_PROGRESS_KEY = 'stocks-registry-scan-v1';
+const SCAN_INTER_SEGMENT_DELAY = 200;
+const SCAN_MAX_RETRIES = 5;
 
 interface ScanProgress {
   lastBlock: number;
@@ -33,6 +35,28 @@ function saveScanProgress(block: bigint, extraAddresses: string[]): void {
       extraAddresses,
     }));
   } catch {}
+}
+
+function is429Error(err: unknown): boolean {
+  const msg = String(err);
+  return msg.includes('429') || msg.includes('Too Many') || msg.includes('Failed to fetch') || msg.includes('CORS');
+}
+
+async function withScanRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  for (let attempt = 0; attempt <= SCAN_MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (is429Error(err) && attempt < SCAN_MAX_RETRIES) {
+        const delay = 1000 * 2 ** attempt;
+        console.warn(`[registry] ${label} attempt ${attempt + 1} failed (429), waiting ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`${label}: retries exhausted`);
 }
 
 const ERC20_SYMBOL_ABI = [
@@ -95,6 +119,10 @@ export function loadSnapshotTokens(): StockToken[] {
   return loadSnapshot();
 }
 
+export function getSnapshotTokenCount(): number {
+  return loadSnapshot().length;
+}
+
 export async function enumerateOfficialTokens(): Promise<RegistryResult> {
   let lastError: Error | null = null;
 
@@ -131,12 +159,15 @@ export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockT
   let cursor = fromBlock;
   while (cursor <= currentBlock) {
     const end = cursor + REGISTRY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + REGISTRY_SEGMENT_SIZE - 1n;
-    const logs = await client.getLogs({
-      event: parseAbiItem('event BeaconUpgraded(address indexed beacon)'),
-      args: { beacon: OFFICIAL_BEACON as Address },
-      fromBlock: cursor,
-      toBlock: end,
-    });
+    const logs = await withScanRetry(
+      () => client.getLogs({
+        event: parseAbiItem('event BeaconUpgraded(address indexed beacon)'),
+        args: { beacon: OFFICIAL_BEACON as Address },
+        fromBlock: cursor,
+        toBlock: end,
+      }),
+      `scanNewTokens ${cursor}-${end}`,
+    );
     for (const log of logs) {
       const addr = log.address.toLowerCase();
       if (!knownAddresses.has(addr)) {
@@ -144,11 +175,11 @@ export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockT
         knownAddresses.add(addr);
       }
     }
+    const extraAddresses = [...knownAddresses].filter(a => !new Set(loadSnapshot().map(t => t.address.toLowerCase())).has(a));
+    saveScanProgress(end, extraAddresses);
     cursor = end + 1n;
+    await new Promise(r => setTimeout(r, SCAN_INTER_SEGMENT_DELAY));
   }
-
-  const extraAddresses = [...knownAddresses].filter(a => !new Set(loadSnapshot().map(t => t.address.toLowerCase())).has(a));
-  saveScanProgress(currentBlock, extraAddresses);
 
   if (newAddresses.length === 0) return [];
 
@@ -157,10 +188,13 @@ export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockT
     const batch = newAddresses.slice(i, i + 50);
     const symCalls = batch.map(addr => ({ address: addr as Address, abi: ERC20_SYMBOL_ABI, functionName: 'symbol' as const }));
     const nameCalls = batch.map(addr => ({ address: addr as Address, abi: ERC20_NAME_ABI, functionName: 'name' as const }));
-    const [symResults, nameResults] = await Promise.all([
-      client.multicall({ contracts: symCalls, allowFailure: true }),
-      client.multicall({ contracts: nameCalls, allowFailure: true }),
-    ]);
+    const [symResults, nameResults] = await withScanRetry(
+      () => Promise.all([
+        client.multicall({ contracts: symCalls, allowFailure: true }),
+        client.multicall({ contracts: nameCalls, allowFailure: true }),
+      ]),
+      `scanNewTokens metadata ${i}`,
+    );
     for (let j = 0; j < symResults.length; j++) {
       const symR = symResults[j];
       const nameR = nameResults[j];
@@ -199,20 +233,23 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
   let cursor = fromBlock;
   while (cursor <= currentBlock) {
     const end = cursor + REGISTRY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + REGISTRY_SEGMENT_SIZE - 1n;
-    const logs = await client.getLogs({
-      event: parseAbiItem('event BeaconUpgraded(address indexed beacon)'),
-      args: { beacon: OFFICIAL_BEACON as Address },
-      fromBlock: cursor,
-      toBlock: end,
-    });
+    const logs = await withScanRetry(
+      () => client.getLogs({
+        event: parseAbiItem('event BeaconUpgraded(address indexed beacon)'),
+        args: { beacon: OFFICIAL_BEACON as Address },
+        fromBlock: cursor,
+        toBlock: end,
+      }),
+      `enumerate ${cursor}-${end}`,
+    );
     for (const log of logs) {
       addresses.add(log.address.toLowerCase());
     }
+    const extraAddresses = [...addresses].filter(a => !snapshotAddrs.has(a));
+    saveScanProgress(end, extraAddresses);
     cursor = end + 1n;
+    await new Promise(r => setTimeout(r, SCAN_INTER_SEGMENT_DELAY));
   }
-
-  const extraAddresses = [...addresses].filter(a => !snapshotAddrs.has(a));
-  saveScanProgress(currentBlock, extraAddresses);
 
   if (addresses.size === 0) return loadSnapshot();
 
@@ -234,10 +271,13 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
   for (let i = 0; i < addrArr.length; i += batchSize) {
     const symBatch = symbolCalls.slice(i, i + batchSize);
     const nameBatch = nameCalls.slice(i, i + batchSize);
-    const [symResults, nameResults] = await Promise.all([
-      client.multicall({ contracts: symBatch, allowFailure: true }),
-      client.multicall({ contracts: nameBatch, allowFailure: true }),
-    ]);
+    const [symResults, nameResults] = await withScanRetry(
+      () => Promise.all([
+        client.multicall({ contracts: symBatch, allowFailure: true }),
+        client.multicall({ contracts: nameBatch, allowFailure: true }),
+      ]),
+      `enumerate metadata ${i}`,
+    );
     for (let j = 0; j < symResults.length; j++) {
       const symR = symResults[j];
       const nameR = nameResults[j];
