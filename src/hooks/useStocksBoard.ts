@@ -102,6 +102,7 @@ export function useStocksBoard() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const userAddedSymbolsRef = useRef(userAddedSymbols);
   const retryHandleRef = useRef<{ cancel: () => void } | null>(null);
+  const feeRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [, setRetryAttempt] = useState(0);
   const discoveringRef = useRef(false);
 
@@ -129,6 +130,48 @@ export function useStocksBoard() {
       currentSymbols.has(r.symbol)
     );
   }, []);
+
+  const feeRetryCountRef = useRef(0);
+  const scheduleNullFeeRetryRef = useRef<(tokens: StockToken[]) => void>(() => {});
+
+  useEffect(() => {
+    const FEE_RETRY_DELAYS = [10_000, 30_000, 60_000];
+    scheduleNullFeeRetryRef.current = (currentTokens: StockToken[]) => {
+      if (feeRetryRef.current) clearTimeout(feeRetryRef.current);
+      const nullFeePools: StockPool[] = [];
+      for (const pools of poolsRef.current.values()) {
+        nullFeePools.push(...pools.filter(p => p.feeRate === null));
+      }
+      if (nullFeePools.length === 0 || feeRetryCountRef.current >= FEE_RETRY_DELAYS.length) return;
+      const delay = FEE_RETRY_DELAYS[feeRetryCountRef.current];
+      feeRetryRef.current = setTimeout(async () => {
+        feeRetryCountRef.current++;
+        try {
+          const enriched = await enrichStockPoolFees(nullFeePools);
+          const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
+          let changed = false;
+          for (const [addr, pools] of poolsRef.current) {
+            const updated = pools.map(p => {
+              const e = enrichedMap.get(p.pairAddress);
+              if (e && e.feeRate !== null && p.feeRate === null) { changed = true; return e; }
+              return p;
+            });
+            poolsRef.current.set(addr, updated);
+          }
+          if (changed) {
+            const pc = loadPoolCache();
+            for (const [addr, pools] of poolsRef.current) {
+              const t = currentTokens.find(tok => tok.address.toLowerCase() === addr);
+              if (t) pc.set(addr, { tokenAddress: t.address, pools, timestamp: Date.now() });
+            }
+            savePoolCache(pc);
+            setFeeRows(buildRows(currentTokens, poolsRef.current));
+          }
+        } catch { /* fee retry failed */ }
+        scheduleNullFeeRetryRef.current(currentTokens);
+      }, delay);
+    };
+  });
 
   const refresh = useCallback(async () => {
     const gen = ++refreshGenRef.current;
@@ -299,6 +342,8 @@ export function useStocksBoard() {
         setDiscovering(false);
         discoveringRef.current = false;
         setLastUpdate(new Date());
+        feeRetryCountRef.current = 0;
+        scheduleNullFeeRetryRef.current(tokens);
       } else if (loading) {
         setLoading(false);
       }
@@ -364,7 +409,10 @@ export function useStocksBoard() {
       discoveringRef.current = false;
       setLoading(false);
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (feeRetryRef.current) clearTimeout(feeRetryRef.current);
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {

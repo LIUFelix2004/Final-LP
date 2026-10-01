@@ -8,12 +8,12 @@ import {
   REGISTRY_CACHE_TTL_MS,
 } from '../../config/stocks';
 import { CHAINS } from '../../config/chains';
+import { rpcThrottled } from './rpcLimiter';
 import snapshotJson from '../../config/stock-registry.json';
 
 const REGISTRY_SEGMENT_SIZE = 30000n;
 const SCAN_PROGRESS_KEY = 'stocks-registry-scan-v1';
 const SCAN_INTER_SEGMENT_DELAY = 200;
-const SCAN_MAX_RETRIES = 5;
 
 interface ScanProgress {
   lastBlock: number;
@@ -37,26 +37,8 @@ function saveScanProgress(block: bigint, extraAddresses: string[]): void {
   } catch {}
 }
 
-function is429Error(err: unknown): boolean {
-  const msg = String(err);
-  return msg.includes('429') || msg.includes('Too Many') || msg.includes('Failed to fetch') || msg.includes('CORS');
-}
-
-async function withScanRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
-  for (let attempt = 0; attempt <= SCAN_MAX_RETRIES; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (is429Error(err) && attempt < SCAN_MAX_RETRIES) {
-        const delay = 1000 * 2 ** attempt;
-        console.warn(`[registry] ${label} attempt ${attempt + 1} failed (429), waiting ${delay}ms`);
-        await new Promise(r => setTimeout(r, delay));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw new Error(`${label}: retries exhausted`);
+function withScanRetry<T>(fn: () => Promise<T>): Promise<T> {
+  return rpcThrottled(fn, 4);
 }
 
 const ERC20_SYMBOL_ABI = [
@@ -153,9 +135,27 @@ export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockT
   const progressBlock = progress ? BigInt(progress.lastBlock) : 0n;
   const fromBlock = progressBlock > snapshotBlock ? progressBlock + 1n : (snapshotBlock > 0n ? snapshotBlock : 0n);
 
-  if (fromBlock > currentBlock) return [];
+  if (fromBlock > currentBlock) {
+    // N7: even if no new blocks, restore previously-found extras from progress
+    if (progress) {
+      for (const addr of progress.extraAddresses) {
+        knownAddresses.add(addr.toLowerCase());
+      }
+    }
+    return [];
+  }
 
+  // N7: restore extra addresses from a previous interrupted scan
   const newAddresses: string[] = [];
+  if (progress) {
+    for (const addr of progress.extraAddresses) {
+      const a = addr.toLowerCase();
+      if (!knownAddresses.has(a)) {
+        newAddresses.push(a);
+        knownAddresses.add(a);
+      }
+    }
+  }
   let cursor = fromBlock;
   while (cursor <= currentBlock) {
     const end = cursor + REGISTRY_SEGMENT_SIZE - 1n > currentBlock ? currentBlock : cursor + REGISTRY_SEGMENT_SIZE - 1n;
@@ -166,7 +166,6 @@ export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockT
         fromBlock: cursor,
         toBlock: end,
       }),
-      `scanNewTokens ${cursor}-${end}`,
     );
     for (const log of logs) {
       const addr = log.address.toLowerCase();
@@ -193,7 +192,6 @@ export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockT
         client.multicall({ contracts: symCalls, allowFailure: true }),
         client.multicall({ contracts: nameCalls, allowFailure: true }),
       ]),
-      `scanNewTokens metadata ${i}`,
     );
     for (let j = 0; j < symResults.length; j++) {
       const symR = symResults[j];
@@ -240,7 +238,6 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
         fromBlock: cursor,
         toBlock: end,
       }),
-      `enumerate ${cursor}-${end}`,
     );
     for (const log of logs) {
       addresses.add(log.address.toLowerCase());
@@ -276,7 +273,6 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
         client.multicall({ contracts: symBatch, allowFailure: true }),
         client.multicall({ contracts: nameBatch, allowFailure: true }),
       ]),
-      `enumerate metadata ${i}`,
     );
     for (let j = 0; j < symResults.length; j++) {
       const symR = symResults[j];

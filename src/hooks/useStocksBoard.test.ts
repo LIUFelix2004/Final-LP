@@ -105,6 +105,40 @@ describe('N5: buildRows showPlaceholders returns rows for tokens with no pools',
   });
 });
 
+// N8: rpcThrottled concurrency and retry
+describe('N8: rpcThrottled limits concurrency and retries 429', () => {
+  it('limits concurrent calls to 4', async () => {
+    const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
+    let maxConcurrent = 0;
+    let current = 0;
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        rpcThrottled(async () => {
+          current++;
+          if (current > maxConcurrent) maxConcurrent = current;
+          await new Promise(r => setTimeout(r, 10));
+          current--;
+          return i;
+        }, 0)
+      )
+    );
+    expect(results).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(maxConcurrent).toBeLessThanOrEqual(4);
+  });
+
+  it('retries on 429 errors', async () => {
+    const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
+    let callCount = 0;
+    const result = await rpcThrottled(async () => {
+      callCount++;
+      if (callCount < 3) throw new Error('429 Too Many Requests');
+      return 'ok';
+    }, 3);
+    expect(result).toBe('ok');
+    expect(callCount).toBe(3);
+  });
+});
+
 // M8: scheduleRetries tests
 describe('M8: scheduleRetries fires at correct delays', () => {
   beforeEach(() => {

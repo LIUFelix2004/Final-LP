@@ -485,6 +485,36 @@ describe('registry -32602 detection (M2)', () => {
   });
 });
 
+describe('N7: scanNewTokens restores extraAddresses from interrupted scan', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
+  it('restores previously found addresses from progress on resume', async () => {
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
+      multicall: vi.fn().mockResolvedValue([]),
+      getStorageAt: vi.fn(),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const extraAddr = '0x' + 'ab'.repeat(20);
+    localStorage.setItem('stocks-registry-scan-v1', JSON.stringify({
+      lastBlock: 77_000_000,
+      extraAddresses: [extraAddr],
+    }));
+
+    vi.resetModules();
+    const { scanNewTokens } = await import('./registry');
+    const known = new Set<string>();
+    await scanNewTokens(known);
+    expect(known.has(extraAddr)).toBe(true);
+  });
+});
+
 describe('M3: keyless V4 pools count as failures', () => {
   beforeEach(() => {
     vi.clearAllMocks();

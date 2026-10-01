@@ -3,45 +3,13 @@ import type { StockPool } from '../../types/stocks';
 import { USDG_ADDRESS, USDG_DECIMALS, V3_QUOTER_V2, V4_QUOTER, V4_POOL_MANAGER_ROBINHOOD, V4_POOL_MANAGER_DEPLOY_BLOCK, ROBINHOOD_CHAIN_ID } from '../../config/stocks';
 import { CHAINS } from '../../config/chains';
 
+import { rpcThrottled } from './rpcLimiter';
+export { rpcThrottled };
+
 const STOCK_TOKEN_DECIMALS = 18;
 const SANITY_THRESHOLD = 0.10;
 const V4_KEY_SEGMENT_SIZE = 10_000_000n;
 const V4_OR_SEGMENT_SIZE = 100_000n;
-
-const RPC_MAX_CONCURRENCY = 4;
-let rpcInFlight = 0;
-const rpcWaiters: Array<() => void> = [];
-
-function is429(err: unknown): boolean {
-  const msg = String(err);
-  return msg.includes('429') || msg.includes('Too Many') || msg.includes('Failed to fetch') || msg.includes('CORS');
-}
-
-export async function rpcThrottled<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
-  while (rpcInFlight >= RPC_MAX_CONCURRENCY) {
-    await new Promise<void>(resolve => rpcWaiters.push(resolve));
-  }
-  rpcInFlight++;
-  try {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        return await fn();
-      } catch (err) {
-        if (is429(err) && attempt < retries) {
-          await new Promise(r => setTimeout(r, 1000 * 2 ** attempt));
-          continue;
-        }
-        throw err;
-      }
-    }
-    throw new Error('rpc retries exhausted');
-  } finally {
-    rpcInFlight--;
-    if (rpcWaiters.length > 0) {
-      rpcWaiters.shift()!();
-    }
-  }
-}
 
 const negativeCache = new Map<string, number>();
 const NEGATIVE_CACHE_TTL = 5 * 60 * 1000;

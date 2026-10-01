@@ -8,6 +8,7 @@ import {
   UP33_CL_FACTORY,
   ROBINHOOD_CHAIN_ID,
 } from '../../config/stocks';
+import { rpcThrottled } from './rpcLimiter';
 
 const V3_FEE_ABI = [
   { inputs: [], name: 'fee', outputs: [{ name: '', type: 'uint24' }], stateMutability: 'view', type: 'function' },
@@ -54,20 +55,10 @@ function v4PoolSlot0StorageSlot(poolId: Hex): Hex {
 async function multicallWithRetry<T>(
   client: ReturnType<typeof getClient>,
   contracts: Parameters<ReturnType<typeof getClient>['multicall']>[0]['contracts'],
-  retries = 2,
 ): Promise<Array<{ status: 'success' | 'failure'; result?: T; error?: Error }>> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await client.multicall({ contracts, allowFailure: true }) as Array<{ status: 'success' | 'failure'; result?: T; error?: Error }>;
-    } catch (err) {
-      if (attempt < retries) {
-        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw new Error('multicall retries exhausted');
+  return rpcThrottled(
+    () => client.multicall({ contracts, allowFailure: true }) as Promise<Array<{ status: 'success' | 'failure'; result?: T; error?: Error }>>,
+  );
 }
 
 export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool[]> {
