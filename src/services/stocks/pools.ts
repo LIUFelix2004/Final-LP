@@ -388,7 +388,7 @@ export function updatePoolsFromPairs(
     if (!pair) return pool;
     const updated = pairToStockPool(pair, tokenAddress);
     if (!updated) return pool;
-    return { ...updated, feeRate: pool.feeRate, feeRateInferred: pool.feeRateInferred };
+    return { ...updated, feeRate: pool.feeRate, feeRateInferred: pool.feeRateInferred, feeRateUnreadable: pool.feeRateUnreadable };
   });
 }
 

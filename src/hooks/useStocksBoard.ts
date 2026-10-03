@@ -60,11 +60,15 @@ export function mergePoolsPreservingEnriched(
       existing.set(addr, newPools);
       continue;
     }
-    const enrichedMap = new Map<string, StockPool>();
+    const preserveMap = new Map<string, StockPool>();
     for (const p of current) {
-      if (p.feeRate !== null && !p.feeRateInferred) enrichedMap.set(p.pairAddress, p);
+      if ((p.feeRate !== null && !p.feeRateInferred) || p.feeRateUnreadable) preserveMap.set(p.pairAddress, p);
     }
-    existing.set(addr, newPools.map(p => enrichedMap.get(p.pairAddress) ?? p));
+    existing.set(addr, newPools.map(p => {
+      const kept = preserveMap.get(p.pairAddress);
+      if (kept) return { ...p, feeRate: kept.feeRate, feeRateInferred: kept.feeRateInferred, feeRateUnreadable: kept.feeRateUnreadable };
+      return p;
+    }));
   }
 }
 
@@ -156,7 +160,9 @@ export function useStocksBoard() {
           for (const [addr, pools] of poolsRef.current) {
             const updated = pools.map(p => {
               const e = enrichedMap.get(p.pairAddress);
-              if (e && e.feeRate !== null && !e.feeRateInferred && (p.feeRate === null || p.feeRateInferred)) { changed = true; return e; }
+              if (!e) return p;
+              if (e.feeRate !== null && !e.feeRateInferred && (p.feeRate === null || p.feeRateInferred)) { changed = true; return e; }
+              if (e.feeRateUnreadable && !p.feeRateUnreadable) { changed = true; return { ...p, feeRateUnreadable: true }; }
               return p;
             });
             poolsRef.current.set(addr, updated);
@@ -255,7 +261,9 @@ export function useStocksBoard() {
             for (const [addr, pools] of poolsRef.current) {
               const updated = pools.map(p => {
                 const e = enrichedMap.get(p.pairAddress);
-                if (e && e.feeRate !== null && (p.feeRate === null || p.feeRate !== e.feeRate)) { feeChanged = true; return e; }
+                if (!e) return p;
+                if (e.feeRate !== null && (p.feeRate === null || p.feeRate !== e.feeRate)) { feeChanged = true; return e; }
+                if (e.feeRateUnreadable && !p.feeRateUnreadable) { feeChanged = true; return { ...p, feeRateUnreadable: true }; }
                 return p;
               });
               poolsRef.current.set(addr, updated);

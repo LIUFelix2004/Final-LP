@@ -109,8 +109,18 @@ export interface QuoteThrottled {
   _throttled: true;
 }
 
-function isThrottled(r: AmountQuoteResult | QuoteThrottled | null): r is QuoteThrottled {
+export interface QuoteReverted {
+  _reverted: true;
+}
+
+type QuoteResult = AmountQuoteResult | QuoteThrottled | QuoteReverted | null;
+
+function isThrottled(r: QuoteResult): r is QuoteThrottled {
   return r !== null && '_throttled' in r;
+}
+
+function isReverted(r: QuoteResult): r is QuoteReverted {
+  return r !== null && '_reverted' in r;
 }
 
 export interface QuoteStats {
@@ -423,7 +433,7 @@ export async function quoteV3Pool(
   pool: StockPool,
   amountUsdg: number,
   direction: 'buy' | 'sell',
-): Promise<AmountQuoteResult | QuoteThrottled | null> {
+): Promise<QuoteResult> {
   if (pool.version !== 'V3' || pool.dex !== 'Uniswap' || pool.feeRate === null || pool.feeRateInferred) return null;
 
   const client = getClient();
@@ -535,7 +545,7 @@ export async function quoteV3Pool(
         return { _throttled: true as const };
       }
     }
-    return null;
+    return { _reverted: true as const };
   }
 }
 
@@ -544,7 +554,7 @@ export async function quoteV4Pool(
   poolKey: V4PoolKey,
   amountUsdg: number,
   direction: 'buy' | 'sell',
-): Promise<AmountQuoteResult | QuoteThrottled | null> {
+): Promise<QuoteResult> {
   const client = getClient();
   const usdgAddr = USDG_ADDRESS.toLowerCase() as Address;
 
@@ -669,7 +679,7 @@ export async function quoteV4Pool(
         return { _throttled: true as const };
       }
     }
-    return null;
+    return { _reverted: true as const };
   }
 }
 
@@ -751,7 +761,7 @@ export async function quoteBestPool(
     preFailures.push({ pool: p, reason: '费率未知' });
   }
 
-  const tasks: Array<{ pool: StockPool; quoteFn: () => Promise<AmountQuoteResult | QuoteThrottled | null> }> = [
+  const tasks: Array<{ pool: StockPool; quoteFn: () => Promise<QuoteResult> }> = [
     ...v3Pools.map(p => ({ pool: p, quoteFn: () => quoteV3Pool(p, amountUsdg, direction) })),
   ];
 
@@ -768,7 +778,7 @@ export async function quoteBestPool(
   if (totalPools === 0) return { best: null, stats: emptyStats };
 
   let done = 0;
-  const firstResults: Array<AmountQuoteResult | QuoteThrottled | null> = new Array(tasks.length).fill(null);
+  const firstResults: Array<QuoteResult> = new Array(tasks.length).fill(null);
 
   if (tasks.length > 0) {
     const queue = tasks.map((_, i) => i);
@@ -785,7 +795,8 @@ export async function quoteBestPool(
 
     const needsRetry: number[] = [];
     for (let i = 0; i < firstResults.length; i++) {
-      if (firstResults[i] === null) needsRetry.push(i);
+      const r = firstResults[i];
+      if (r === null) needsRetry.push(i);
     }
 
     if (needsRetry.length > 0) {
@@ -805,7 +816,7 @@ export async function quoteBestPool(
 
   for (let i = 0; i < firstResults.length; i++) {
     const r = firstResults[i];
-    if (r !== null && !isThrottled(r)) {
+    if (r !== null && !isThrottled(r) && !isReverted(r)) {
       quotedCount++;
       valid.push(r);
     } else {

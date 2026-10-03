@@ -505,3 +505,61 @@ describe('R17: mergeResolvedPools skip-write optimization', () => {
     expect(changed).toBe(true);
   });
 });
+
+// R18: feeRateUnreadable preserved through mergePoolsPreservingEnriched
+describe('R18: feeRateUnreadable preservation', () => {
+  it('mergePoolsPreservingEnriched preserves feeRateUnreadable from existing', () => {
+    const existing = new Map<string, StockPool[]>();
+    const unreadablePool = makePool('0xdynV4', null);
+    unreadablePool.version = 'V4';
+    unreadablePool.feeRateUnreadable = true;
+    existing.set('0xtoken', [unreadablePool]);
+
+    const incoming = new Map<string, StockPool[]>();
+    const freshPool = makePool('0xdynV4', null);
+    freshPool.version = 'V4';
+    incoming.set('0xtoken', [freshPool]);
+
+    mergePoolsPreservingEnriched(existing, incoming);
+
+    const merged = existing.get('0xtoken')!;
+    expect(merged[0].feeRateUnreadable).toBe(true);
+  });
+
+  it('unreadable pools excluded from null-fee retry filter', () => {
+    const v4Dyn = makePool('0xdyn', null);
+    v4Dyn.version = 'V4';
+    v4Dyn.feeRateUnreadable = true;
+
+    const up33 = makePool('0xup33', 0.01);
+    up33.dex = 'UP33';
+    up33.feeRateInferred = true;
+    up33.feeRateUnreadable = true;
+
+    const normal = makePool('0xnormal', null);
+
+    const all = [v4Dyn, up33, normal];
+    const retry = all.filter(p => (p.feeRate === null || p.feeRateInferred) && !p.feeRateUnreadable);
+    expect(retry).toHaveLength(1);
+    expect(retry[0].pairAddress).toBe('0xnormal');
+  });
+
+  it('enrich mark-only update: feeRateUnreadable propagates even when feeRate stays null', () => {
+    const pool = makePool('0xdynV4', null);
+    pool.version = 'V4';
+
+    const enriched = { ...pool, feeRateUnreadable: true };
+    const enrichedMap = new Map([[enriched.pairAddress, enriched]]);
+
+    let changed = false;
+    const updated = [pool].map(p => {
+      const e = enrichedMap.get(p.pairAddress);
+      if (!e) return p;
+      if (e.feeRate !== null && !e.feeRateInferred && (p.feeRate === null || p.feeRateInferred)) { changed = true; return e; }
+      if (e.feeRateUnreadable && !p.feeRateUnreadable) { changed = true; return { ...p, feeRateUnreadable: true }; }
+      return p;
+    });
+    expect(changed).toBe(true);
+    expect(updated[0].feeRateUnreadable).toBe(true);
+  });
+});

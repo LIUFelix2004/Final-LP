@@ -738,7 +738,6 @@ describe('P5: all-failed results not cached', () => {
 
     const mockClient = {
       call: vi.fn()
-        .mockRejectedValueOnce(new Error('fail'))
         .mockRejectedValueOnce(new Error('fail')),
       getLogs: vi.fn().mockResolvedValue([]),
     };
@@ -1142,7 +1141,7 @@ describe('R17: quoteV3Pool retries on 429, no retry on revert', () => {
     const result = await quoteV3Pool(v3Pool, 100, 'buy');
     expect(callNum).toBe(2);
     expect(result).not.toBeNull();
-    if (result && !('_throttled' in result)) {
+    if (result && !('_throttled' in result) && !('_reverted' in result)) {
       expect(result.effectivePrice).toBeGreaterThan(0);
     }
   });
@@ -1162,7 +1161,8 @@ describe('R17: quoteV3Pool retries on 429, no retry on revert', () => {
 
     const result = await quoteV3Pool(v3Pool, 100, 'buy');
     expect(callNum).toBe(1);
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result).toHaveProperty('_reverted', true);
   });
 });
 
@@ -1190,5 +1190,38 @@ describe('R17: quoteBestPool error type distinction', () => {
     clearQuoteCache();
     const result = await quoteBestPool([pool], 100, 'buy');
     expect(result.stats.failedReasons).toContain('RPC 限流，稍后重试');
+  });
+});
+
+// R18: revert only calls quoter once (no retry in needsRetry loop)
+describe('R18: revert quoter called only once in quoteBestPool', () => {
+  it('revert pool is not retried in needsRetry loop', async () => {
+    const pool = makePool({
+      version: 'V3',
+      dex: 'Uniswap',
+      feeRate: 0.003,
+      feeRateInferred: false,
+      priceNative: 200,
+      priceUsd: 200,
+      liquidityUsd: 100_000,
+    });
+
+    let callNum = 0;
+    const mockCall = vi.fn().mockImplementation(async () => {
+      callNum++;
+      throw new Error('execution reverted');
+    });
+    (createPublicClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      call: mockCall,
+      getLogs: vi.fn(() => []),
+      getBlockNumber: vi.fn(() => Promise.resolve(75_500_000n)),
+      multicall: vi.fn(() => Promise.resolve([])),
+    });
+
+    clearQuoteCache();
+    const result = await quoteBestPool([pool], 100, 'buy');
+    expect(callNum).toBe(1);
+    expect(result.stats.failedCount).toBe(1);
+    expect(result.stats.failedReasons).toContain('报价失败');
   });
 });
