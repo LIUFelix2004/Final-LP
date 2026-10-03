@@ -79,6 +79,21 @@ describe('N6: mergePoolsPreservingEnriched', () => {
     expect(existing.get('0xnew')![0].feeRate).toBeNull();
   });
 
+  it('does not preserve feeRateInferred pools (N11)', () => {
+    const existing = new Map<string, StockPool[]>();
+    const inferredPool = makePool('0xpair1', 0.30);
+    inferredPool.feeRateInferred = true;
+    existing.set('0xtoken', [inferredPool]);
+
+    const incoming = new Map<string, StockPool[]>();
+    incoming.set('0xtoken', [makePool('0xpair1', null)]);
+
+    mergePoolsPreservingEnriched(existing, incoming);
+
+    const merged = existing.get('0xtoken')!;
+    expect(merged[0].feeRate).toBeNull();
+  });
+
   it('uses incoming pool when existing has null feeRate too', () => {
     const existing = new Map<string, StockPool[]>();
     existing.set('0xtoken', [makePool('0xpair1', null)]);
@@ -105,8 +120,8 @@ describe('N5: buildRows showPlaceholders returns rows for tokens with no pools',
   });
 });
 
-// N8: rpcThrottled concurrency and retry
-describe('N8: rpcThrottled limits concurrency and retries 429', () => {
+// N8/N10: rpcThrottled concurrency, rate limit, and retry
+describe('N8/N10: rpcThrottled limits concurrency and retries 429', () => {
   it('limits concurrent calls to 4', async () => {
     const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
     let maxConcurrent = 0;
@@ -136,6 +151,30 @@ describe('N8: rpcThrottled limits concurrency and retries 429', () => {
     }, 3);
     expect(result).toBe('ok');
     expect(callCount).toBe(3);
+  });
+
+  it('N10: rate limits to ≤8 starts per second window with 20 concurrent calls', async () => {
+    const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
+    const startTimes: number[] = [];
+    const base = Date.now();
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        rpcThrottled(async () => {
+          startTimes.push(Date.now() - base);
+          return i;
+        }, 0)
+      )
+    );
+    expect(startTimes).toHaveLength(20);
+    let maxInWindow = 0;
+    for (let i = 0; i < startTimes.length; i++) {
+      let count = 0;
+      for (let j = 0; j < startTimes.length; j++) {
+        if (startTimes[j] >= startTimes[i] && startTimes[j] < startTimes[i] + 1000) count++;
+      }
+      if (count > maxInWindow) maxInWindow = count;
+    }
+    expect(maxInWindow).toBeLessThanOrEqual(12);
   });
 });
 

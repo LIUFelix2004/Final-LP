@@ -408,6 +408,11 @@ export function loadPoolCache(): Map<string, PoolCacheEntry> {
     for (const e of entries) {
       const ttl = e.pools.length === 0 ? EMPTY_POOL_CACHE_TTL_MS : POOL_CACHE_TTL_MS;
       if (now - e.timestamp < ttl) {
+        e.pools = e.pools.map(p =>
+          p.feeRateInferred && p.version === 'V3' && p.dex === 'Uniswap'
+            ? { ...p, feeRate: null, feeRateInferred: false }
+            : p
+        );
         map.set(e.tokenAddress.toLowerCase(), e);
       }
     }

@@ -911,3 +911,81 @@ describe('P4: computeTickerFee skips inferred fees', () => {
     expect(result.unknownVolume).toBe(50_000);
   });
 });
+
+describe('N11: enrichStockPoolFees leaves feeRate null on transient failure', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps feeRate null when multicall batch fails (429)', async () => {
+    let callCount = 0;
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
+      multicall: vi.fn().mockImplementation(() => {
+        callCount++;
+        throw new Error('429 Too Many Requests');
+      }),
+      getStorageAt: vi.fn(),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const { enrichStockPoolFees } = await import('./poolFees');
+    const pool: StockPool = {
+      pairAddress: '0x' + 'dd'.repeat(20),
+      dexId: 'uniswap_v3',
+      dex: 'Uniswap',
+      labels: [],
+      version: 'V3',
+      tokenAddress: TSLA_ADDR,
+      tokenSymbol: 'TSLA',
+      isBaseUsdg: true,
+      priceNative: 200,
+      priceUsd: 200,
+      liquidityUsd: 500_000,
+      feeRate: null,
+      feeRateInferred: false,
+      volume: { m5: null, h1: null, h6: null, h24: null },
+    };
+
+    const result = await enrichStockPoolFees([pool]);
+    expect(result[0].feeRate).toBeNull();
+    expect(result[0].feeRateInferred).toBe(false);
+  });
+
+  it('re-enriches feeRateInferred pools on second call', async () => {
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
+      multicall: vi.fn().mockResolvedValue([
+        { status: 'success', result: 500 },
+      ]),
+      getStorageAt: vi.fn(),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const { enrichStockPoolFees } = await import('./poolFees');
+    const pool: StockPool = {
+      pairAddress: '0x' + 'dd'.repeat(20),
+      dexId: 'uniswap_v3',
+      dex: 'Uniswap',
+      labels: [],
+      version: 'V3',
+      tokenAddress: TSLA_ADDR,
+      tokenSymbol: 'TSLA',
+      isBaseUsdg: true,
+      priceNative: 200,
+      priceUsd: 200,
+      liquidityUsd: 500_000,
+      feeRate: 0.30,
+      feeRateInferred: true,
+      volume: { m5: null, h1: null, h6: null, h24: null },
+    };
+
+    const result = await enrichStockPoolFees([pool]);
+    expect(result[0].feeRate).toBe(0.05);
+    expect(result[0].feeRateInferred).toBe(false);
+  });
+});

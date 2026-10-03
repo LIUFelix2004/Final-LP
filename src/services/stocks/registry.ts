@@ -129,7 +129,7 @@ export async function enumerateOfficialTokens(): Promise<RegistryResult> {
 
 export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockToken[]> {
   const client = getClient();
-  const currentBlock = await client.getBlockNumber();
+  const currentBlock = await rpcThrottled(() => client.getBlockNumber(), 0);
 
   const progress = loadScanProgress();
   const progressBlock = progress ? BigInt(progress.lastBlock) : 0n;
@@ -209,7 +209,7 @@ export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockT
 
 async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
   const client = getClient();
-  const currentBlock = await client.getBlockNumber();
+  const currentBlock = await rpcThrottled(() => client.getBlockNumber(), 0);
 
   const addresses = new Set<string>();
 
@@ -296,8 +296,8 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
 export async function readTokenSymbolName(address: string): Promise<{ symbol: string; name: string }> {
   const client = getClient();
   const [symResult, nameResult] = await Promise.all([
-    client.readContract({ address: address as Address, abi: ERC20_SYMBOL_ABI, functionName: 'symbol' }),
-    client.readContract({ address: address as Address, abi: ERC20_NAME_ABI, functionName: 'name' }).catch(() => null),
+    rpcThrottled(() => client.readContract({ address: address as Address, abi: ERC20_SYMBOL_ABI, functionName: 'symbol' }), 0),
+    rpcThrottled(() => client.readContract({ address: address as Address, abi: ERC20_NAME_ABI, functionName: 'name' }), 0).catch(() => null),
   ]);
   const symbol = symResult as string;
   const name = nameResult ? (nameResult as string).replace(/\s*•\s*Robinhood Token$/, '') : symbol;
@@ -307,10 +307,10 @@ export async function readTokenSymbolName(address: string): Promise<{ symbol: st
 export async function verifyOfficialToken(address: string): Promise<boolean> {
   const client = getClient();
   try {
-    const storage = await client.getStorageAt({
+    const storage = await rpcThrottled(() => client.getStorageAt({
       address: address as Address,
       slot: BEACON_SLOT as Hex,
-    });
+    }), 0);
     if (!storage) return false;
     const beaconAddr = `0x${storage.slice(-40)}`.toLowerCase();
     return beaconAddr === OFFICIAL_BEACON.toLowerCase();

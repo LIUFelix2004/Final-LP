@@ -1,20 +1,11 @@
 const MAX_CONCURRENCY = 4;
 const MAX_PER_SECOND = 8;
-const TOKEN_BUCKET_REFILL_INTERVAL = 1000 / MAX_PER_SECOND; // 125ms per token
+const TOKEN_INTERVAL_MS = 1000 / MAX_PER_SECOND; // 125ms between calls
 
 let inFlight = 0;
 const waiters: Array<() => void> = [];
 
-let tokens = MAX_CONCURRENCY;
-let lastRefill = Date.now();
-
-function refillTokens(): void {
-  const now = Date.now();
-  const elapsed = now - lastRefill;
-  const newTokens = elapsed / TOKEN_BUCKET_REFILL_INTERVAL;
-  tokens = Math.min(MAX_PER_SECOND, tokens + newTokens);
-  lastRefill = now;
-}
+let nextAllowedAt = 0;
 
 function is429(err: unknown): boolean {
   const msg = String(err);
@@ -22,22 +13,20 @@ function is429(err: unknown): boolean {
 }
 
 export async function rpcThrottled<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  // Acquire concurrency slot first (before rate-limit wait)
   while (inFlight >= MAX_CONCURRENCY) {
     await new Promise<void>(resolve => waiters.push(resolve));
   }
-
-  refillTokens();
-  if (tokens < 1) {
-    const waitMs = (1 - tokens) * TOKEN_BUCKET_REFILL_INTERVAL;
-    await new Promise(r => setTimeout(r, waitMs));
-    tokens = 0;
-    lastRefill = Date.now();
-  } else {
-    tokens -= 1;
-  }
-
   inFlight++;
+
   try {
+    // Rate limit: reserve a time slot (serialized by design)
+    const now = Date.now();
+    if (nextAllowedAt > now) {
+      await new Promise(r => setTimeout(r, nextAllowedAt - now));
+    }
+    nextAllowedAt = Math.max(Date.now(), nextAllowedAt) + TOKEN_INTERVAL_MS;
+
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         return await fn();

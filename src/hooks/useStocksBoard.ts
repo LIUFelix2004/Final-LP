@@ -62,7 +62,7 @@ export function mergePoolsPreservingEnriched(
     }
     const enrichedMap = new Map<string, StockPool>();
     for (const p of current) {
-      if (p.feeRate !== null) enrichedMap.set(p.pairAddress, p);
+      if (p.feeRate !== null && !p.feeRateInferred) enrichedMap.set(p.pairAddress, p);
     }
     existing.set(addr, newPools.map(p => enrichedMap.get(p.pairAddress) ?? p));
   }
@@ -138,22 +138,22 @@ export function useStocksBoard() {
     const FEE_RETRY_DELAYS = [10_000, 30_000, 60_000];
     scheduleNullFeeRetryRef.current = (currentTokens: StockToken[]) => {
       if (feeRetryRef.current) clearTimeout(feeRetryRef.current);
-      const nullFeePools: StockPool[] = [];
+      const needsFeePools: StockPool[] = [];
       for (const pools of poolsRef.current.values()) {
-        nullFeePools.push(...pools.filter(p => p.feeRate === null));
+        needsFeePools.push(...pools.filter(p => p.feeRate === null || p.feeRateInferred));
       }
-      if (nullFeePools.length === 0 || feeRetryCountRef.current >= FEE_RETRY_DELAYS.length) return;
+      if (needsFeePools.length === 0 || feeRetryCountRef.current >= FEE_RETRY_DELAYS.length) return;
       const delay = FEE_RETRY_DELAYS[feeRetryCountRef.current];
       feeRetryRef.current = setTimeout(async () => {
         feeRetryCountRef.current++;
         try {
-          const enriched = await enrichStockPoolFees(nullFeePools);
+          const enriched = await enrichStockPoolFees(needsFeePools);
           const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
           let changed = false;
           for (const [addr, pools] of poolsRef.current) {
             const updated = pools.map(p => {
               const e = enrichedMap.get(p.pairAddress);
-              if (e && e.feeRate !== null && p.feeRate === null) { changed = true; return e; }
+              if (e && e.feeRate !== null && !e.feeRateInferred && (p.feeRate === null || p.feeRateInferred)) { changed = true; return e; }
               return p;
             });
             poolsRef.current.set(addr, updated);

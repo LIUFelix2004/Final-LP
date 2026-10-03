@@ -233,7 +233,7 @@ async function fetchV4PoolKeyForPool(poolId: string): Promise<V4PoolKey | null> 
 
   const promise = (async (): Promise<V4PoolKey | null> => {
     const client = getClient();
-    const currentBlock = await client.getBlockNumber();
+    const currentBlock = await rpcThrottled(() => client.getBlockNumber(), 0);
     const snap = await ensureV4Snapshot();
     const fromBlock = snap.block > 0n ? snap.block + 1n : V4_POOL_MANAGER_DEPLOY_BLOCK;
 
@@ -323,7 +323,7 @@ export async function fetchV4PoolKeys(poolIds: string[]): Promise<Map<string, V4
   if (toFetch.length === 0) return map;
 
   const client = getClient();
-  const currentBlock = await client.getBlockNumber();
+  const currentBlock = await rpcThrottled(() => client.getBlockNumber(), 0);
   const snap = await ensureV4Snapshot();
   const fromBlock = snap.block > 0n ? snap.block : V4_POOL_MANAGER_DEPLOY_BLOCK;
   const span = currentBlock - fromBlock;
@@ -444,10 +444,10 @@ export async function quoteV3Pool(
       args: [{ tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96: 0n }],
     });
 
-    const result = await client.call({
+    const result = await rpcThrottled(() => client.call({
       to: V3_QUOTER_V2 as Address,
       data,
-    });
+    }), 0);
 
     if (!result.data) return null;
 
@@ -530,10 +530,10 @@ export async function quoteV4Pool(
       }],
     });
 
-    const result = await client.call({
+    const result = await rpcThrottled(() => client.call({
       to: V4_QUOTER as Address,
       data,
-    });
+    }), 0);
 
     if (!result.data) return null;
 

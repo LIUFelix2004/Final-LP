@@ -73,7 +73,7 @@ export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool
 
   for (let i = 0; i < pools.length; i++) {
     const p = pools[i];
-    if (p.feeRate !== null) continue;
+    if (p.feeRate !== null && !p.feeRateInferred) continue;
     if (p.version === 'V4' || p.pairAddress.length === 66) {
       v4Pools.push({ idx: i, pool: p });
     } else if (p.dex === 'UP33') {
@@ -96,14 +96,11 @@ export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool
         if (r.status === 'success' && r.result != null) {
           const fee = Number(r.result) / 10000;
           result[otherPools[i].idx] = { ...result[otherPools[i].idx], feeRate: fee, feeRateInferred: false };
-        } else {
-          result[otherPools[i].idx] = { ...result[otherPools[i].idx], feeRate: 0.30, feeRateInferred: true };
         }
+        // Individual contract revert: leave feeRate null so retry can re-enrich
       }
     } catch {
-      for (const { idx } of otherPools) {
-        result[idx] = { ...result[idx], feeRate: 0.30, feeRateInferred: true };
-      }
+      // Whole-batch RPC failure (429/network): leave feeRate null for retry
     }
   }
 
