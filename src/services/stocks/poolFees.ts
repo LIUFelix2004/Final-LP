@@ -190,7 +190,10 @@ export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool
             result[v4Pools[i].idx] = { ...result[v4Pools[i].idx], feeRateUnreadable: true };
             continue;
           }
-          if (lpFee === 0) continue;
+          if (lpFee === 0) {
+            result[v4Pools[i].idx] = { ...result[v4Pools[i].idx], feeRateUnreadable: true };
+            continue;
+          }
           result[v4Pools[i].idx] = { ...result[v4Pools[i].idx], feeRate: lpFee / 10000, feeRateInferred: false };
         }
       }

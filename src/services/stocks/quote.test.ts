@@ -1225,3 +1225,85 @@ describe('R18: revert quoter called only once in quoteBestPool', () => {
     expect(result.stats.failedReasons).toContain('报价失败');
   });
 });
+
+// R19: V4 pool with slot0≠0 but lpFee=0 → feeRateUnreadable
+describe('R19: enrichStockPoolFees marks lpFee=0 V4 pools as unreadable', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('slot0 with sqrtPrice but lpFee=0 sets feeRateUnreadable', async () => {
+    // slot0: sqrtPriceX96 in low 160 bits, tick in next 24 bits, lpFee in bits 208-231
+    // Set sqrtPrice to nonzero, lpFee to 0
+    const sqrtPrice = 1n << 96n;
+    const slot0Hex = '0x' + sqrtPrice.toString(16).padStart(64, '0');
+
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
+      multicall: vi.fn().mockResolvedValue([
+        { status: 'success', result: slot0Hex },
+      ]),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const { enrichStockPoolFees } = await import('./poolFees');
+
+    const pool: StockPool = {
+      pairAddress: '0x' + 'ab'.repeat(32),
+      dexId: 'uniswap_v4',
+      dex: 'Uniswap',
+      labels: ['v4'],
+      version: 'V4',
+      tokenAddress: TSLA_ADDR,
+      tokenSymbol: 'TSLA',
+      isBaseUsdg: false,
+      priceNative: 200,
+      priceUsd: 200,
+      liquidityUsd: 100_000,
+      feeRate: null,
+      feeRateInferred: false,
+      volume: { m5: null, h1: null, h6: null, h24: 50000 },
+    };
+
+    const result = await enrichStockPoolFees([pool]);
+    expect(result[0].feeRate).toBeNull();
+    expect(result[0].feeRateUnreadable).toBe(true);
+  });
+
+  it('slot0 === 0 does NOT mark unreadable (allows retry)', async () => {
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
+      multicall: vi.fn().mockResolvedValue([
+        { status: 'success', result: '0x' + '0'.repeat(64) },
+      ]),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const { enrichStockPoolFees } = await import('./poolFees');
+
+    const pool: StockPool = {
+      pairAddress: '0x' + 'cd'.repeat(32),
+      dexId: 'uniswap_v4',
+      dex: 'Uniswap',
+      labels: ['v4'],
+      version: 'V4',
+      tokenAddress: TSLA_ADDR,
+      tokenSymbol: 'TSLA',
+      isBaseUsdg: false,
+      priceNative: 200,
+      priceUsd: 200,
+      liquidityUsd: 100_000,
+      feeRate: null,
+      feeRateInferred: false,
+      volume: { m5: null, h1: null, h6: null, h24: 50000 },
+    };
+
+    const result = await enrichStockPoolFees([pool]);
+    expect(result[0].feeRate).toBeNull();
+    expect(result[0].feeRateUnreadable).toBeUndefined();
+  });
+});

@@ -541,8 +541,8 @@ export async function quoteV3Pool(
           priceImpact: direction === 'buy' ? retryImpact : -retryImpact,
           quotedVia: `Uniswap V3 ${pool.feeRate.toFixed(2)}%`,
         };
-      } catch {
-        return { _throttled: true as const };
+      } catch (retryErr) {
+        return is429(retryErr) ? { _throttled: true as const } : { _reverted: true as const };
       }
     }
     return { _reverted: true as const };
@@ -675,8 +675,8 @@ export async function quoteV4Pool(
           priceImpact: direction === 'buy' ? retryImpact : -retryImpact,
           quotedVia: `Uniswap V4 ${feeLabel}`,
         };
-      } catch {
-        return { _throttled: true as const };
+      } catch (retryErr) {
+        return is429(retryErr) ? { _throttled: true as const } : { _reverted: true as const };
       }
     }
     return { _reverted: true as const };
