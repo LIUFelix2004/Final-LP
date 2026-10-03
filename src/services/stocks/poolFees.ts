@@ -159,7 +159,7 @@ export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool
             const r = tsfResults[i];
             if (r.status === 'success' && r.result != null) {
               const feePpm = Number(r.result);
-              result[tickSpacings[i].origIdx] = { ...result[tickSpacings[i].origIdx], feeRate: feePpm / 10000, feeRateInferred: true };
+              result[tickSpacings[i].origIdx] = { ...result[tickSpacings[i].origIdx], feeRate: feePpm / 10000, feeRateInferred: true, feeRateUnreadable: true };
             }
           }
         }
@@ -186,7 +186,10 @@ export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool
           const slot0 = BigInt(r.result as string);
           if (slot0 === 0n) continue;
           const lpFee = Number((slot0 >> 208n) & 0xFFFFFFn);
-          if (lpFee >= V4_DYNAMIC_FEE_FLAG) continue;
+          if (lpFee >= V4_DYNAMIC_FEE_FLAG) {
+            result[v4Pools[i].idx] = { ...result[v4Pools[i].idx], feeRateUnreadable: true };
+            continue;
+          }
           if (lpFee === 0) continue;
           result[v4Pools[i].idx] = { ...result[v4Pools[i].idx], feeRate: lpFee / 10000, feeRateInferred: false };
         }

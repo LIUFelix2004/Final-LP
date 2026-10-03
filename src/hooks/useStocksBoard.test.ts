@@ -122,6 +122,11 @@ describe('N5: buildRows showPlaceholders returns rows for tokens with no pools',
 
 // N8/N10: rpcThrottled concurrency, rate limit, and retry
 describe('N8/N10: rpcThrottled limits concurrency and retries 429', () => {
+  beforeEach(async () => {
+    const { _resetForTest } = await import('../services/stocks/rpcLimiter');
+    _resetForTest();
+  });
+
   it('limits concurrent calls to 4', async () => {
     const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
     let maxConcurrent = 0;
@@ -153,7 +158,7 @@ describe('N8/N10: rpcThrottled limits concurrency and retries 429', () => {
     expect(callCount).toBe(3);
   });
 
-  it('N10/N12: rate limits to ≤9 starts per 1s window (instant fns, 20 calls)', async () => {
+  it('N10/N12: rate limits to ≤6 starts per 1s window (instant fns, 20 calls)', { timeout: 15_000 }, async () => {
     const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
     const startTimes: number[] = [];
     const base = Date.now();
@@ -174,11 +179,11 @@ describe('N8/N10: rpcThrottled limits concurrency and retries 429', () => {
       }
       if (count > maxInWindow) maxInWindow = count;
     }
-    // 125ms intervals → 8 per second, +1 for timer resolution jitter
-    expect(maxInWindow).toBeLessThanOrEqual(9);
+    // 200ms intervals → 5 per second, +1 for timer resolution jitter
+    expect(maxInWindow).toBeLessThanOrEqual(6);
   });
 
-  it('N10/N12: rate limits to ≤9 starts per 1s window (200ms fns, 20 calls)', async () => {
+  it('N10/N12: rate limits to ≤6 starts per 1s window (200ms fns, 20 calls)', { timeout: 15_000 }, async () => {
     const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
     const startTimes: number[] = [];
     const base = Date.now();
@@ -200,11 +205,11 @@ describe('N8/N10: rpcThrottled limits concurrency and retries 429', () => {
       }
       if (count > maxInWindow) maxInWindow = count;
     }
-    // 125ms intervals → 8 per second, +1 for timer resolution jitter
-    expect(maxInWindow).toBeLessThanOrEqual(9);
+    // 200ms intervals → 5 per second, +1 for timer resolution jitter
+    expect(maxInWindow).toBeLessThanOrEqual(6);
   });
 
-  it('N12: 429 retry re-acquires rate slot (no extra HTTP beyond limiter retries)', async () => {
+  it('N12: 429 retry re-acquires rate slot (no extra HTTP beyond limiter retries)', { timeout: 15_000 }, async () => {
     const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
     let httpCount = 0;
     const result = await rpcThrottled(async () => {
@@ -356,5 +361,147 @@ describe('N14: loadPoolCache migration writeback', () => {
     const poolCacheWrites = spy.mock.calls.filter(c => c[0] === 'stocks-pools-v2');
     expect(poolCacheWrites.length).toBe(0);
     spy.mockRestore();
+  });
+});
+
+// R17: rpcLimiter exports correct constants
+describe('R17: rpcLimiter constants and adaptive backoff', () => {
+  beforeEach(async () => {
+    const { _resetForTest } = await import('../services/stocks/rpcLimiter');
+    _resetForTest();
+  });
+
+  it('exports BASE_RATE_PER_SECOND=5, MAX_CONCURRENCY=4', async () => {
+    const { BASE_RATE_PER_SECOND, MAX_CONCURRENCY } = await import('../services/stocks/rpcLimiter');
+    expect(BASE_RATE_PER_SECOND).toBe(5);
+    expect(MAX_CONCURRENCY).toBe(4);
+  });
+
+  it('40 concurrent calls: max in-flight ≤4, rolling 1s ≤6', { timeout: 30_000 }, async () => {
+    const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
+    let maxConcurrent = 0;
+    let current = 0;
+    const startTimes: number[] = [];
+    const base = Date.now();
+    await Promise.all(
+      Array.from({ length: 40 }, (_, i) =>
+        rpcThrottled(async () => {
+          current++;
+          startTimes.push(Date.now() - base);
+          if (current > maxConcurrent) maxConcurrent = current;
+          await new Promise(r => setTimeout(r, 5));
+          current--;
+          return i;
+        }, 0)
+      )
+    );
+    expect(maxConcurrent).toBeLessThanOrEqual(4);
+    let maxInWindow = 0;
+    for (let i = 0; i < startTimes.length; i++) {
+      let count = 0;
+      for (let j = 0; j < startTimes.length; j++) {
+        if (startTimes[j] >= startTimes[i] && startTimes[j] < startTimes[i] + 1000) count++;
+      }
+      if (count > maxInWindow) maxInWindow = count;
+    }
+    expect(maxInWindow).toBeLessThanOrEqual(6);
+  });
+
+  it('consecutive 429 triggers degraded mode (≤4/s for 30s)', { timeout: 30_000 }, async () => {
+    const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
+    let callNum = 0;
+    for (let i = 0; i < 3; i++) {
+      try {
+        await rpcThrottled(async () => {
+          callNum++;
+          throw new Error('429 Too Many Requests');
+        }, 0);
+      } catch { /* expected */ }
+    }
+    expect(callNum).toBe(3);
+    const startTimes: number[] = [];
+    const base = Date.now();
+    await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        rpcThrottled(async () => {
+          startTimes.push(Date.now() - base);
+          return i;
+        }, 0)
+      )
+    );
+    let maxInWindow = 0;
+    for (let i = 0; i < startTimes.length; i++) {
+      let count = 0;
+      for (let j = 0; j < startTimes.length; j++) {
+        if (startTimes[j] >= startTimes[i] && startTimes[j] < startTimes[i] + 1000) count++;
+      }
+      if (count > maxInWindow) maxInWindow = count;
+    }
+    // degraded mode: 3/s + 1 jitter tolerance
+    expect(maxInWindow).toBeLessThanOrEqual(4);
+  });
+});
+
+// R17: dynamic fee pools excluded from retry queue
+describe('R17: dynamic fee / unreadable pools excluded from retry', () => {
+  it('feeRateUnreadable pools are excluded from null-fee retry filter', () => {
+    const dynamicV4 = makePool('0xdynamic', null);
+    dynamicV4.version = 'V4';
+    dynamicV4.feeRateUnreadable = true;
+
+    const up33Pool = makePool('0xup33', 0.01);
+    up33Pool.dex = 'UP33';
+    up33Pool.feeRateInferred = true;
+    up33Pool.feeRateUnreadable = true;
+
+    const normalNull = makePool('0xnormal', null);
+
+    const allPools = [dynamicV4, up33Pool, normalNull];
+    const retryQueue = allPools.filter(p => (p.feeRate === null || p.feeRateInferred) && !p.feeRateUnreadable);
+    expect(retryQueue).toHaveLength(1);
+    expect(retryQueue[0].pairAddress).toBe('0xnormal');
+  });
+});
+
+// R17: mergeResolvedPools skips write when fee unchanged
+describe('R17: mergeResolvedPools skip-write optimization', () => {
+  it('does not trigger change when resolved fee matches existing', () => {
+    const existing = new Map<string, StockPool[]>();
+    const pool = makePool('0xpair1', 0.003);
+    existing.set('0xtoken', [pool]);
+
+    const resolved = makePool('0xpair1', 0.003);
+
+    const resolvedMap = new Map([[resolved.pairAddress, resolved]]);
+    let changed = false;
+    for (const [_addr, pools] of existing) {
+      for (const p of pools) {
+        const r = resolvedMap.get(p.pairAddress);
+        if (r && r.feeRate !== null && !r.feeRateInferred && (p.feeRate !== r.feeRate || p.feeRateInferred)) {
+          changed = true;
+        }
+      }
+    }
+    expect(changed).toBe(false);
+  });
+
+  it('triggers change when resolved fee differs from existing', () => {
+    const existing = new Map<string, StockPool[]>();
+    const pool = makePool('0xpair1', null);
+    existing.set('0xtoken', [pool]);
+
+    const resolved = makePool('0xpair1', 0.003);
+
+    const resolvedMap = new Map([[resolved.pairAddress, resolved]]);
+    let changed = false;
+    for (const [_addr, pools] of existing) {
+      for (const p of pools) {
+        const r = resolvedMap.get(p.pairAddress);
+        if (r && r.feeRate !== null && !r.feeRateInferred && (p.feeRate !== r.feeRate || p.feeRateInferred)) {
+          changed = true;
+        }
+      }
+    }
+    expect(changed).toBe(true);
   });
 });

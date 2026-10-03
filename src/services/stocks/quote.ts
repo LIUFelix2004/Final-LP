@@ -3,7 +3,7 @@ import type { StockPool } from '../../types/stocks';
 import { USDG_ADDRESS, USDG_DECIMALS, V3_QUOTER_V2, V4_QUOTER, V4_POOL_MANAGER_ROBINHOOD, V4_POOL_MANAGER_DEPLOY_BLOCK, ROBINHOOD_CHAIN_ID } from '../../config/stocks';
 import { CHAINS } from '../../config/chains';
 
-import { rpcThrottled } from './rpcLimiter';
+import { rpcThrottled, is429 } from './rpcLimiter';
 import { enrichStockPoolFees } from './poolFees';
 export { rpcThrottled };
 
@@ -103,6 +103,14 @@ export interface AmountQuoteResult {
   effectivePrice: number;
   priceImpact: number;
   quotedVia: string;
+}
+
+export interface QuoteThrottled {
+  _throttled: true;
+}
+
+function isThrottled(r: AmountQuoteResult | QuoteThrottled | null): r is QuoteThrottled {
+  return r !== null && '_throttled' in r;
 }
 
 export interface QuoteStats {
@@ -415,7 +423,7 @@ export async function quoteV3Pool(
   pool: StockPool,
   amountUsdg: number,
   direction: 'buy' | 'sell',
-): Promise<AmountQuoteResult | null> {
+): Promise<AmountQuoteResult | QuoteThrottled | null> {
   if (pool.version !== 'V3' || pool.dex !== 'Uniswap' || pool.feeRate === null || pool.feeRateInferred) return null;
 
   const client = getClient();
@@ -485,7 +493,48 @@ export async function quoteV3Pool(
       priceImpact: direction === 'buy' ? priceImpact : -priceImpact,
       quotedVia: `Uniswap V3 ${pool.feeRate.toFixed(2)}%`,
     };
-  } catch {
+  } catch (err) {
+    if (is429(err)) {
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 300));
+      try {
+        const retryData = encodeFunctionData({
+          abi: V3_QUOTE_ABI,
+          functionName: 'quoteExactInputSingle',
+          args: [{ tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96: 0n }],
+        });
+        const retryResult = await rpcThrottled(() => client.call({
+          to: V3_QUOTER_V2 as Address,
+          data: retryData,
+        }), 0);
+        if (!retryResult.data) return null;
+        const retryDecoded = decodeFunctionResult({
+          abi: V3_QUOTE_ABI,
+          functionName: 'quoteExactInputSingle',
+          data: retryResult.data,
+        });
+        const retryAmountOut = retryDecoded[0];
+        let retryPrice: number;
+        if (direction === 'buy') {
+          const tokensOut = Number(retryAmountOut) / 10 ** STOCK_TOKEN_DECIMALS;
+          if (tokensOut === 0) return null;
+          retryPrice = amountUsdg / tokensOut;
+        } else {
+          const usdgOut = Number(retryAmountOut) / 10 ** USDG_DECIMALS;
+          retryPrice = usdgOut / (Number(amountIn) / 10 ** STOCK_TOKEN_DECIMALS);
+        }
+        if (!isSane(retryPrice, pool.priceNative)) return null;
+        const retryMid = pool.priceNative ?? retryPrice;
+        const retryImpact = retryMid > 0 ? (retryPrice - retryMid) / retryMid : 0;
+        return {
+          pool, direction, amountIn, amountOut: retryAmountOut,
+          effectivePrice: retryPrice,
+          priceImpact: direction === 'buy' ? retryImpact : -retryImpact,
+          quotedVia: `Uniswap V3 ${pool.feeRate.toFixed(2)}%`,
+        };
+      } catch {
+        return { _throttled: true as const };
+      }
+    }
     return null;
   }
 }
@@ -495,7 +544,7 @@ export async function quoteV4Pool(
   poolKey: V4PoolKey,
   amountUsdg: number,
   direction: 'buy' | 'sell',
-): Promise<AmountQuoteResult | null> {
+): Promise<AmountQuoteResult | QuoteThrottled | null> {
   const client = getClient();
   const usdgAddr = USDG_ADDRESS.toLowerCase() as Address;
 
@@ -513,6 +562,8 @@ export async function quoteV4Pool(
     zeroForOne = !usdgIsCurrency0;
     amountIn = BigInt(Math.round(tokenAmount * 10 ** STOCK_TOKEN_DECIMALS));
   }
+
+  const feeLabel = (poolKey.fee & 0x800000) ? '动态费' : `${(poolKey.fee / 10000).toFixed(2)}%`;
 
   try {
     const data = encodeFunctionData({
@@ -563,8 +614,6 @@ export async function quoteV4Pool(
     const midPrice = pool.priceNative ?? effectivePrice;
     const priceImpact = midPrice > 0 ? (effectivePrice - midPrice) / midPrice : 0;
 
-    const feeLabel = (poolKey.fee & 0x800000) ? '动态费' : `${(poolKey.fee / 10000).toFixed(2)}%`;
-
     return {
       pool,
       direction,
@@ -574,7 +623,52 @@ export async function quoteV4Pool(
       priceImpact: direction === 'buy' ? priceImpact : -priceImpact,
       quotedVia: `Uniswap V4 ${feeLabel}`,
     };
-  } catch {
+  } catch (err) {
+    if (is429(err)) {
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 300));
+      try {
+        const retryData = encodeFunctionData({
+          abi: V4_QUOTE_ABI,
+          functionName: 'quoteExactInputSingle',
+          args: [{
+            poolKey: {
+              currency0: poolKey.currency0, currency1: poolKey.currency1,
+              fee: poolKey.fee, tickSpacing: poolKey.tickSpacing, hooks: poolKey.hooks,
+            },
+            zeroForOne, exactAmount: amountIn, hookData: '0x' as Hex,
+          }],
+        });
+        const retryResult = await rpcThrottled(() => client.call({
+          to: V4_QUOTER as Address, data: retryData,
+        }), 0);
+        if (!retryResult.data) return null;
+        const retryDecoded = decodeFunctionResult({
+          abi: V4_QUOTE_ABI, functionName: 'quoteExactInputSingle', data: retryResult.data,
+        });
+        const retryAmountOut = retryDecoded[0] as bigint;
+        if (retryAmountOut <= 0n) return null;
+        let retryPrice: number;
+        if (direction === 'buy') {
+          const tokensOut = Number(retryAmountOut) / 10 ** STOCK_TOKEN_DECIMALS;
+          if (tokensOut === 0) return null;
+          retryPrice = amountUsdg / tokensOut;
+        } else {
+          const usdgOut = Number(retryAmountOut) / 10 ** USDG_DECIMALS;
+          retryPrice = usdgOut / (Number(amountIn) / 10 ** STOCK_TOKEN_DECIMALS);
+        }
+        if (!isSane(retryPrice, pool.priceNative)) return null;
+        const retryMid = pool.priceNative ?? retryPrice;
+        const retryImpact = retryMid > 0 ? (retryPrice - retryMid) / retryMid : 0;
+        return {
+          pool, direction, amountIn, amountOut: retryAmountOut,
+          effectivePrice: retryPrice,
+          priceImpact: direction === 'buy' ? retryImpact : -retryImpact,
+          quotedVia: `Uniswap V4 ${feeLabel}`,
+        };
+      } catch {
+        return { _throttled: true as const };
+      }
+    }
     return null;
   }
 }
@@ -657,7 +751,7 @@ export async function quoteBestPool(
     preFailures.push({ pool: p, reason: '费率未知' });
   }
 
-  const tasks: Array<{ pool: StockPool; quoteFn: () => Promise<AmountQuoteResult | null> }> = [
+  const tasks: Array<{ pool: StockPool; quoteFn: () => Promise<AmountQuoteResult | QuoteThrottled | null> }> = [
     ...v3Pools.map(p => ({ pool: p, quoteFn: () => quoteV3Pool(p, amountUsdg, direction) })),
   ];
 
@@ -674,7 +768,7 @@ export async function quoteBestPool(
   if (totalPools === 0) return { best: null, stats: emptyStats };
 
   let done = 0;
-  const firstResults: Array<AmountQuoteResult | null> = new Array(tasks.length).fill(null);
+  const firstResults: Array<AmountQuoteResult | QuoteThrottled | null> = new Array(tasks.length).fill(null);
 
   if (tasks.length > 0) {
     const queue = tasks.map((_, i) => i);
@@ -697,7 +791,8 @@ export async function quoteBestPool(
     if (needsRetry.length > 0) {
       await Promise.all(needsRetry.map(async (idx) => {
         await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
-        firstResults[idx] = await tasks[idx].quoteFn();
+        const retryResult = await tasks[idx].quoteFn();
+        if (!isThrottled(retryResult)) firstResults[idx] = retryResult;
       }));
     }
   }
@@ -709,13 +804,14 @@ export async function quoteBestPool(
   const valid: AmountQuoteResult[] = [];
 
   for (let i = 0; i < firstResults.length; i++) {
-    if (firstResults[i] !== null) {
+    const r = firstResults[i];
+    if (r !== null && !isThrottled(r)) {
       quotedCount++;
-      valid.push(firstResults[i]!);
+      valid.push(r);
     } else {
       failedCount++;
       failedPools.push(tasks[i].pool.pairAddress);
-      failedReasons.push('报价失败');
+      failedReasons.push(isThrottled(r) ? 'RPC 限流，稍后重试' : '报价失败');
     }
   }
 

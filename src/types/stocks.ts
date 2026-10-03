@@ -19,6 +19,7 @@ export interface StockPool {
   liquidityUsd: number | null;
   feeRate: number | null;
   feeRateInferred: boolean;
+  feeRateUnreadable?: boolean;
   volume: {
     m5: number | null;
     h1: number | null;

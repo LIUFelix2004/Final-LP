@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { encodeFunctionData, decodeFunctionResult, keccak256, toBytes } from 'viem';
 import type { StockPool } from '../../types/stocks';
 import { USDG_ADDRESS } from '../../config/stocks';
-import { INITIALIZE_EVENT, type V4PoolKey } from './quote';
+import { INITIALIZE_EVENT, type V4PoolKey, type AmountQuoteResult } from './quote';
 import fixture from './__fixtures__/v4-quoter-responses.json';
 
 vi.mock('viem', async () => {
@@ -168,7 +168,7 @@ describe('quoteV3Pool', () => {
     };
     vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
 
-    const result = await quoteV3Pool(pool, 2000, 'buy');
+    const result = await quoteV3Pool(pool, 2000, 'buy') as AmountQuoteResult | null;
     expect(result).not.toBeNull();
     expect(result!.direction).toBe('buy');
     expect(result!.effectivePrice).toBe(200);
@@ -228,7 +228,7 @@ describe('quoteV4Pool', () => {
     };
     vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
 
-    const result = await quoteV4Pool(pool, v4PoolKey, 2000, 'buy');
+    const result = await quoteV4Pool(pool, v4PoolKey, 2000, 'buy') as AmountQuoteResult | null;
     expect(result).not.toBeNull();
     expect(result!.direction).toBe('buy');
     expect(result!.amountOut).toBe(BigInt(testCase.decoded.amountOut));
@@ -252,7 +252,7 @@ describe('quoteV4Pool', () => {
     };
     vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
 
-    const result = await quoteV4Pool(pool, dynamicKey, 2000, 'buy');
+    const result = await quoteV4Pool(pool, dynamicKey, 2000, 'buy') as AmountQuoteResult | null;
     expect(result).not.toBeNull();
     expect(result!.quotedVia).toBe('Uniswap V4 动态费');
   });
@@ -1109,5 +1109,86 @@ describe('N13: multicall chunks respect rpcLimiter concurrency (≤4)', () => {
 
     expect(mockClient.multicall).toHaveBeenCalled();
     expect(maxConcurrent).toBeLessThanOrEqual(4);
+  });
+});
+
+// R17: quoter retries on 429 then succeeds
+describe('R17: quoteV3Pool retries on 429, no retry on revert', () => {
+  const v3Pool = makePool({
+    version: 'V3',
+    dex: 'Uniswap',
+    feeRate: 0.003,
+    feeRateInferred: false,
+    priceNative: 200,
+    priceUsd: 200,
+    liquidityUsd: 100_000,
+  });
+
+  it('first 429 then success returns quote', async () => {
+    let callNum = 0;
+    const validResponse = '0x' + BigInt(500000000000000000n).toString(16).padStart(64, '0') + '0'.repeat(192);
+    const mockCall = vi.fn().mockImplementation(async () => {
+      callNum++;
+      if (callNum === 1) throw new Error('429 Too Many Requests');
+      return { data: validResponse };
+    });
+    (createPublicClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      call: mockCall,
+      getLogs: vi.fn(() => []),
+      getBlockNumber: vi.fn(() => Promise.resolve(75_500_000n)),
+      multicall: vi.fn(() => Promise.resolve([])),
+    });
+
+    const result = await quoteV3Pool(v3Pool, 100, 'buy');
+    expect(callNum).toBe(2);
+    expect(result).not.toBeNull();
+    if (result && !('_throttled' in result)) {
+      expect(result.effectivePrice).toBeGreaterThan(0);
+    }
+  });
+
+  it('contract revert does not retry', async () => {
+    let callNum = 0;
+    const mockCall = vi.fn().mockImplementation(async () => {
+      callNum++;
+      throw new Error('execution reverted');
+    });
+    (createPublicClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      call: mockCall,
+      getLogs: vi.fn(() => []),
+      getBlockNumber: vi.fn(() => Promise.resolve(75_500_000n)),
+      multicall: vi.fn(() => Promise.resolve([])),
+    });
+
+    const result = await quoteV3Pool(v3Pool, 100, 'buy');
+    expect(callNum).toBe(1);
+    expect(result).toBeNull();
+  });
+});
+
+// R17: error type distinction in quoteBestPool
+describe('R17: quoteBestPool error type distinction', () => {
+  it('429 failure reason shows "RPC 限流，稍后重试"', async () => {
+    const pool = makePool({
+      version: 'V3',
+      dex: 'Uniswap',
+      feeRate: 0.003,
+      feeRateInferred: false,
+      priceNative: 200,
+      priceUsd: 200,
+      liquidityUsd: 100_000,
+    });
+
+    const mockCall = vi.fn().mockRejectedValue(new Error('429 Too Many Requests'));
+    (createPublicClient as ReturnType<typeof vi.fn>).mockReturnValue({
+      call: mockCall,
+      getLogs: vi.fn(() => []),
+      getBlockNumber: vi.fn(() => Promise.resolve(75_500_000n)),
+      multicall: vi.fn(() => Promise.resolve([])),
+    });
+
+    clearQuoteCache();
+    const result = await quoteBestPool([pool], 100, 'buy');
+    expect(result.stats.failedReasons).toContain('RPC 限流，稍后重试');
   });
 });

@@ -141,7 +141,7 @@ export function useStocksBoard() {
       if (feeRetryRef.current) clearTimeout(feeRetryRef.current);
       const needsFeePools: StockPool[] = [];
       for (const pools of poolsRef.current.values()) {
-        needsFeePools.push(...pools.filter(p => p.feeRate === null || p.feeRateInferred));
+        needsFeePools.push(...pools.filter(p => (p.feeRate === null || p.feeRateInferred) && !p.feeRateUnreadable));
       }
       if (needsFeePools.length === 0) return;
       const delay = feeRetryCountRef.current < FEE_RETRY_DELAYS.length
@@ -238,22 +238,34 @@ export function useStocksBoard() {
       }
 
       if (poolsRef.current.size > 0) {
-        let allNeedFees: StockPool[] = [];
-        for (const pools of poolsRef.current.values()) {
-          allNeedFees.push(...pools.filter(p => p.feeRate === null));
-        }
-        if (allNeedFees.length > 0) {
-          const enriched = await enrichStockPoolFees(allNeedFees);
-          const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
-          for (const [addr, pools] of poolsRef.current) {
-            poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
-          }
-        }
-
         const rows = buildRows(tokens, poolsRef.current);
         setFeeRows(rows);
         setLoading(false);
         setLastUpdate(new Date());
+
+        let allNeedFees: StockPool[] = [];
+        for (const pools of poolsRef.current.values()) {
+          allNeedFees.push(...pools.filter(p => p.feeRate === null && !p.feeRateUnreadable));
+        }
+        if (allNeedFees.length > 0) {
+          try {
+            const enriched = await enrichStockPoolFees(allNeedFees);
+            const enrichedMap = new Map(enriched.map(p => [p.pairAddress, p]));
+            let feeChanged = false;
+            for (const [addr, pools] of poolsRef.current) {
+              const updated = pools.map(p => {
+                const e = enrichedMap.get(p.pairAddress);
+                if (e && e.feeRate !== null && (p.feeRate === null || p.feeRate !== e.feeRate)) { feeChanged = true; return e; }
+                return p;
+              });
+              poolsRef.current.set(addr, updated);
+            }
+            if (feeChanged) {
+              setFeeRows(buildRows(tokens, poolsRef.current));
+              setLastUpdate(new Date());
+            }
+          } catch { /* background fee enrichment failed */ }
+        }
       }
 
       // N5: render placeholder rows immediately when discovery needed
@@ -570,15 +582,19 @@ export function useStocksBoard() {
     const resolvedMap = new Map(resolved.map(p => [p.pairAddress, p]));
     let changed = false;
     for (const [addr, pools] of poolsRef.current) {
+      let tokenChanged = false;
       const updated = pools.map(p => {
         const r = resolvedMap.get(p.pairAddress);
-        if (r && r.feeRate !== null && !r.feeRateInferred && (p.feeRate === null || p.feeRateInferred)) {
-          changed = true;
+        if (r && r.feeRate !== null && !r.feeRateInferred && (p.feeRate !== r.feeRate || p.feeRateInferred)) {
+          tokenChanged = true;
           return r;
         }
         return p;
       });
-      if (changed) poolsRef.current.set(addr, updated);
+      if (tokenChanged) {
+        changed = true;
+        poolsRef.current.set(addr, updated);
+      }
     }
     if (changed) {
       const pc = loadPoolCache();
