@@ -153,7 +153,7 @@ describe('N8/N10: rpcThrottled limits concurrency and retries 429', () => {
     expect(callCount).toBe(3);
   });
 
-  it('N10: rate limits to ≤8 starts per second window with 20 concurrent calls', async () => {
+  it('N10/N12: rate limits to ≤9 starts per 1s window (instant fns, 20 calls)', async () => {
     const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
     const startTimes: number[] = [];
     const base = Date.now();
@@ -174,7 +174,46 @@ describe('N8/N10: rpcThrottled limits concurrency and retries 429', () => {
       }
       if (count > maxInWindow) maxInWindow = count;
     }
-    expect(maxInWindow).toBeLessThanOrEqual(12);
+    // 125ms intervals → 8 per second, +1 for timer resolution jitter
+    expect(maxInWindow).toBeLessThanOrEqual(9);
+  });
+
+  it('N10/N12: rate limits to ≤9 starts per 1s window (200ms fns, 20 calls)', async () => {
+    const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
+    const startTimes: number[] = [];
+    const base = Date.now();
+    await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        rpcThrottled(async () => {
+          startTimes.push(Date.now() - base);
+          await new Promise(r => setTimeout(r, 200));
+          return i;
+        }, 0)
+      )
+    );
+    expect(startTimes).toHaveLength(20);
+    let maxInWindow = 0;
+    for (let i = 0; i < startTimes.length; i++) {
+      let count = 0;
+      for (let j = 0; j < startTimes.length; j++) {
+        if (startTimes[j] >= startTimes[i] && startTimes[j] < startTimes[i] + 1000) count++;
+      }
+      if (count > maxInWindow) maxInWindow = count;
+    }
+    // 125ms intervals → 8 per second, +1 for timer resolution jitter
+    expect(maxInWindow).toBeLessThanOrEqual(9);
+  });
+
+  it('N12: 429 retry re-acquires rate slot (no extra HTTP beyond limiter retries)', async () => {
+    const { rpcThrottled } = await import('../services/stocks/rpcLimiter');
+    let httpCount = 0;
+    const result = await rpcThrottled(async () => {
+      httpCount++;
+      if (httpCount <= 2) throw new Error('429 Too Many Requests');
+      return 'ok';
+    }, 3);
+    expect(result).toBe('ok');
+    expect(httpCount).toBe(3);
   });
 });
 

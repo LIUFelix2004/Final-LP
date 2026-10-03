@@ -989,3 +989,43 @@ describe('N11: enrichStockPoolFees leaves feeRate null on transient failure', ()
     expect(result[0].feeRateInferred).toBe(false);
   });
 });
+
+describe('N11b: quoteBestPool does on-demand fee read for null-fee V3 pools', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearQuoteCache();
+    resetV4Snapshot();
+  });
+
+  it('reads fee on-demand and quotes through main pool', async () => {
+    const v3AmountOut = BigInt(Math.round(250 * 1e18));
+    const v3QuoteResponse = '0x' + [
+      v3AmountOut.toString(16).padStart(64, '0'),
+      '0'.repeat(64),
+      '0'.repeat(64),
+      (50000n).toString(16).padStart(64, '0'),
+    ].join('');
+
+    const mockClient = {
+      call: vi.fn().mockResolvedValue({ data: v3QuoteResponse }),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
+      multicall: vi.fn().mockResolvedValue([{ status: 'success', result: 500 }]),
+      getStorageAt: vi.fn(),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const mainPool = makePool({
+      pairAddress: '0x' + 'dd'.repeat(20),
+      feeRate: null,
+      feeRateInferred: false,
+      liquidityUsd: 1_000_000,
+    });
+
+    const result = await quoteBestPool([mainPool], 50000, 'buy');
+
+    expect(mockClient.multicall).toHaveBeenCalled();
+    expect(result.best).not.toBeNull();
+    expect(result.stats.mainPoolFailed).toBe(false);
+  });
+});

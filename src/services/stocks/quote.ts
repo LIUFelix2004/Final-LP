@@ -4,6 +4,7 @@ import { USDG_ADDRESS, USDG_DECIMALS, V3_QUOTER_V2, V4_QUOTER, V4_POOL_MANAGER_R
 import { CHAINS } from '../../config/chains';
 
 import { rpcThrottled } from './rpcLimiter';
+import { enrichStockPoolFees } from './poolFees';
 export { rpcThrottled };
 
 const STOCK_TOKEN_DECIMALS = 18;
@@ -90,7 +91,7 @@ const robinhoodChain = {
 function getClient() {
   return createPublicClient({
     chain: robinhoodChain,
-    transport: http(CHAINS[ROBINHOOD_CHAIN_ID]?.rpcUrl),
+    transport: http(CHAINS[ROBINHOOD_CHAIN_ID]?.rpcUrl, { retryCount: 0 }),
   });
 }
 
@@ -615,9 +616,27 @@ export async function quoteBestPool(
     return cached.result;
   }
 
-  const v3Pools = uniPools.filter(p => p.version === 'V3' && p.feeRate !== null && !p.feeRateInferred);
-  const v3FeeUnknown = uniPools.filter(p => p.version === 'V3' && (p.feeRate === null || p.feeRateInferred));
+  let v3Pools = uniPools.filter(p => p.version === 'V3' && p.feeRate !== null && !p.feeRateInferred);
+  let v3FeeUnknown = uniPools.filter(p => p.version === 'V3' && (p.feeRate === null || p.feeRateInferred));
   const v4Pools = uniPools.filter(p => p.version === 'V4');
+
+  // On-demand fee read for unknown-fee V3 pools
+  if (v3FeeUnknown.length > 0) {
+    try {
+      const enriched = await enrichStockPoolFees(v3FeeUnknown);
+      const resolved: StockPool[] = [];
+      const stillUnknown: StockPool[] = [];
+      for (const p of enriched) {
+        if (p.feeRate !== null && !p.feeRateInferred) {
+          resolved.push(p);
+        } else {
+          stillUnknown.push(p);
+        }
+      }
+      v3Pools = [...v3Pools, ...resolved];
+      v3FeeUnknown = stillUnknown;
+    } catch { /* on-demand fee read failed, keep them as unknown */ }
+  }
 
   const mainPool = uniPools.reduce((best, p) =>
     (p.liquidityUsd ?? 0) > (best.liquidityUsd ?? 0) ? p : best

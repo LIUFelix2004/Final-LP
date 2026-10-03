@@ -299,6 +299,9 @@ export function useStocksBoard() {
                   poolsRef.current.set(addr, pools.map(p => enrichedMap.get(p.pairAddress) ?? p));
                 }
               } catch { /* fee enrichment failed for batch, continue */ }
+              scheduleNullFeeRetryRef.current(tokens);
+            } else {
+              scheduleNullFeeRetryRef.current(tokens);
             }
 
             if (cumulativeResults.size > lastBatchSize) {
@@ -342,7 +345,6 @@ export function useStocksBoard() {
         setDiscovering(false);
         discoveringRef.current = false;
         setLastUpdate(new Date());
-        feeRetryCountRef.current = 0;
         scheduleNullFeeRetryRef.current(tokens);
       } else if (loading) {
         setLoading(false);

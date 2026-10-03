@@ -64,7 +64,7 @@ const robinhoodChain = {
 function getClient() {
   return createPublicClient({
     chain: robinhoodChain,
-    transport: http(CHAINS[ROBINHOOD_CHAIN_ID]?.rpcUrl),
+    transport: http(CHAINS[ROBINHOOD_CHAIN_ID]?.rpcUrl, { retryCount: 0 }),
     batch: { multicall: true },
   });
 }
