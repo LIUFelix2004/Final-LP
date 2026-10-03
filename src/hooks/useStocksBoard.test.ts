@@ -280,3 +280,81 @@ describe('M8: scheduleRetries fires at correct delays', () => {
     handle.cancel();
   });
 });
+
+// N14: loadPoolCache migration writes back to localStorage
+describe('N14: loadPoolCache migration writeback', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('immediately persists migrated inferred V3 Uniswap pools', async () => {
+    const { loadPoolCache } = await import('../services/stocks/pools');
+
+    const pollutedEntry = {
+      tokenAddress: '0x' + 'aa'.repeat(20),
+      pools: [{
+        pairAddress: '0x' + 'bb'.repeat(20),
+        dexId: 'uniswap_v3',
+        dex: 'Uniswap',
+        labels: [],
+        version: 'V3',
+        tokenAddress: '0x' + 'aa'.repeat(20),
+        tokenSymbol: 'TST',
+        isBaseUsdg: true,
+        priceNative: null,
+        priceUsd: null,
+        liquidityUsd: null,
+        feeRate: 0.30,
+        feeRateInferred: true,
+        volume: { m5: null, h1: null, h6: null, h24: null },
+      }],
+      timestamp: Date.now(),
+    };
+
+    localStorage.setItem('stocks-pools-v2', JSON.stringify([pollutedEntry]));
+
+    const cache = loadPoolCache();
+    const entry = cache.get(pollutedEntry.tokenAddress.toLowerCase());
+    expect(entry).toBeDefined();
+    expect(entry!.pools[0].feeRate).toBeNull();
+    expect(entry!.pools[0].feeRateInferred).toBe(false);
+
+    const saved = JSON.parse(localStorage.getItem('stocks-pools-v2')!);
+    expect(saved[0].pools[0].feeRate).toBeNull();
+    expect(saved[0].pools[0].feeRateInferred).toBe(false);
+  });
+
+  it('does not write back if no migration needed', async () => {
+    const { loadPoolCache } = await import('../services/stocks/pools');
+
+    const cleanEntry = {
+      tokenAddress: '0x' + 'aa'.repeat(20),
+      pools: [{
+        pairAddress: '0x' + 'bb'.repeat(20),
+        dexId: 'uniswap_v3',
+        dex: 'Uniswap',
+        labels: [],
+        version: 'V3',
+        tokenAddress: '0x' + 'aa'.repeat(20),
+        tokenSymbol: 'TST',
+        isBaseUsdg: true,
+        priceNative: null,
+        priceUsd: null,
+        liquidityUsd: null,
+        feeRate: 0.05,
+        feeRateInferred: false,
+        volume: { m5: null, h1: null, h6: null, h24: null },
+      }],
+      timestamp: Date.now(),
+    };
+
+    localStorage.setItem('stocks-pools-v2', JSON.stringify([cleanEntry]));
+    const spy = vi.spyOn(Storage.prototype, 'setItem');
+
+    loadPoolCache();
+
+    const poolCacheWrites = spy.mock.calls.filter(c => c[0] === 'stocks-pools-v2');
+    expect(poolCacheWrites.length).toBe(0);
+    spy.mockRestore();
+  });
+});

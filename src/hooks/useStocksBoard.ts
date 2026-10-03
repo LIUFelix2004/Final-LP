@@ -136,14 +136,17 @@ export function useStocksBoard() {
 
   useEffect(() => {
     const FEE_RETRY_DELAYS = [10_000, 30_000, 60_000];
+    const LOW_FREQ_RETRY_MS = 300_000;
     scheduleNullFeeRetryRef.current = (currentTokens: StockToken[]) => {
       if (feeRetryRef.current) clearTimeout(feeRetryRef.current);
       const needsFeePools: StockPool[] = [];
       for (const pools of poolsRef.current.values()) {
         needsFeePools.push(...pools.filter(p => p.feeRate === null || p.feeRateInferred));
       }
-      if (needsFeePools.length === 0 || feeRetryCountRef.current >= FEE_RETRY_DELAYS.length) return;
-      const delay = FEE_RETRY_DELAYS[feeRetryCountRef.current];
+      if (needsFeePools.length === 0) return;
+      const delay = feeRetryCountRef.current < FEE_RETRY_DELAYS.length
+        ? FEE_RETRY_DELAYS[feeRetryCountRef.current]
+        : LOW_FREQ_RETRY_MS;
       feeRetryRef.current = setTimeout(async () => {
         feeRetryCountRef.current++;
         try {
@@ -159,6 +162,7 @@ export function useStocksBoard() {
             poolsRef.current.set(addr, updated);
           }
           if (changed) {
+            feeRetryCountRef.current = 0;
             const pc = loadPoolCache();
             for (const [addr, pools] of poolsRef.current) {
               const t = currentTokens.find(tok => tok.address.toLowerCase() === addr);
@@ -344,6 +348,7 @@ export function useStocksBoard() {
 
         setDiscovering(false);
         discoveringRef.current = false;
+        feeRetryCountRef.current = 0;
         setLastUpdate(new Date());
         scheduleNullFeeRetryRef.current(tokens);
       } else if (loading) {
@@ -560,6 +565,32 @@ export function useStocksBoard() {
     });
   }, []);
 
+  const mergeResolvedPools = useCallback((resolved: import('../types/stocks').StockPool[]) => {
+    if (resolved.length === 0) return;
+    const resolvedMap = new Map(resolved.map(p => [p.pairAddress, p]));
+    let changed = false;
+    for (const [addr, pools] of poolsRef.current) {
+      const updated = pools.map(p => {
+        const r = resolvedMap.get(p.pairAddress);
+        if (r && r.feeRate !== null && !r.feeRateInferred && (p.feeRate === null || p.feeRateInferred)) {
+          changed = true;
+          return r;
+        }
+        return p;
+      });
+      if (changed) poolsRef.current.set(addr, updated);
+    }
+    if (changed) {
+      const pc = loadPoolCache();
+      for (const [addr, pools] of poolsRef.current) {
+        const t = registry.find(tok => tok.address.toLowerCase() === addr);
+        if (t) pc.set(addr, { tokenAddress: t.address, pools, timestamp: Date.now() });
+      }
+      savePoolCache(pc);
+      setFeeRows(buildRows(registry, poolsRef.current));
+    }
+  }, [registry, buildRows]);
+
   const [samplerVersion, setSamplerVersion] = useState(0);
 
   useEffect(() => {
@@ -614,5 +645,6 @@ export function useStocksBoard() {
     registryDegraded,
     retryRegistry,
     retryLoading,
+    mergeResolvedPools,
   };
 }

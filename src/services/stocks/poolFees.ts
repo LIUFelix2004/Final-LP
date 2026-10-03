@@ -38,11 +38,13 @@ const robinhoodChain = {
   },
 } as const;
 
+const MULTICALL_CHUNK_SIZE = 100;
+
 function getClient() {
   return createPublicClient({
     chain: robinhoodChain,
     transport: http(CHAINS[ROBINHOOD_CHAIN_ID]?.rpcUrl, { retryCount: 0 }),
-    batch: { multicall: true },
+    batch: { multicall: { batchSize: 100_000 } },
   });
 }
 
@@ -56,9 +58,16 @@ async function multicallWithRetry<T>(
   client: ReturnType<typeof getClient>,
   contracts: Parameters<ReturnType<typeof getClient>['multicall']>[0]['contracts'],
 ): Promise<Array<{ status: 'success' | 'failure'; result?: T; error?: Error }>> {
-  return rpcThrottled(
-    () => client.multicall({ contracts, allowFailure: true }) as Promise<Array<{ status: 'success' | 'failure'; result?: T; error?: Error }>>,
-  );
+  type R = { status: 'success' | 'failure'; result?: T; error?: Error };
+  const all: R[] = [];
+  for (let i = 0; i < contracts.length; i += MULTICALL_CHUNK_SIZE) {
+    const chunk = contracts.slice(i, i + MULTICALL_CHUNK_SIZE) as typeof contracts;
+    const results = await rpcThrottled(
+      () => client.multicall({ contracts: chunk, allowFailure: true }) as Promise<R[]>,
+    );
+    all.push(...results);
+  }
+  return all;
 }
 
 export async function enrichStockPoolFees(pools: StockPool[]): Promise<StockPool[]> {

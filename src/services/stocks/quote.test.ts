@@ -918,13 +918,11 @@ describe('N11: enrichStockPoolFees leaves feeRate null on transient failure', ()
   });
 
   it('keeps feeRate null when multicall batch fails (429)', async () => {
-    let callCount = 0;
     const mockClient = {
       call: vi.fn(),
       getLogs: vi.fn().mockResolvedValue([]),
       getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
       multicall: vi.fn().mockImplementation(() => {
-        callCount++;
         throw new Error('429 Too Many Requests');
       }),
       getStorageAt: vi.fn(),
@@ -1027,5 +1025,89 @@ describe('N11b: quoteBestPool does on-demand fee read for null-fee V3 pools', ()
     expect(mockClient.multicall).toHaveBeenCalled();
     expect(result.best).not.toBeNull();
     expect(result.stats.mainPoolFailed).toBe(false);
+  });
+
+  it('N14: on-demand resolved pools are returned in BestPoolResult', async () => {
+    const v3AmountOut = BigInt(Math.round(250 * 1e18));
+    const v3QuoteResponse = '0x' + [
+      v3AmountOut.toString(16).padStart(64, '0'),
+      '0'.repeat(64),
+      '0'.repeat(64),
+      (50000n).toString(16).padStart(64, '0'),
+    ].join('');
+
+    const mockClient = {
+      call: vi.fn().mockResolvedValue({ data: v3QuoteResponse }),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
+      multicall: vi.fn().mockResolvedValue([{ status: 'success', result: 500 }]),
+      getStorageAt: vi.fn(),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const nullFeePool = makePool({
+      pairAddress: '0x' + 'dd'.repeat(20),
+      feeRate: null,
+      feeRateInferred: false,
+      liquidityUsd: 1_000_000,
+    });
+
+    const result = await quoteBestPool([nullFeePool], 50000, 'buy');
+
+    expect(result.resolvedPools).toBeDefined();
+    expect(result.resolvedPools!.length).toBe(1);
+    expect(result.resolvedPools![0].feeRate).toBe(0.05);
+    expect(result.resolvedPools![0].feeRateInferred).toBe(false);
+    expect(result.resolvedPools![0].pairAddress).toBe(nullFeePool.pairAddress);
+  });
+});
+
+describe('N13: multicall chunks respect rpcLimiter concurrency (≤4)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('500 extsload calls never exceed 4 concurrent RPCs', async () => {
+    let current = 0;
+    let maxConcurrent = 0;
+
+    const mockClient = {
+      call: vi.fn(),
+      getLogs: vi.fn().mockResolvedValue([]),
+      getBlockNumber: vi.fn().mockResolvedValue(77_000_000n),
+      multicall: vi.fn().mockImplementation(async () => {
+        current++;
+        if (current > maxConcurrent) maxConcurrent = current;
+        await new Promise(r => setTimeout(r, 5));
+        current--;
+        return [{ status: 'success', result: '0x' + '0'.repeat(64) }];
+      }),
+      getStorageAt: vi.fn(),
+    };
+    vi.mocked(createPublicClient).mockReturnValue(mockClient as never);
+
+    const { enrichStockPoolFees } = await import('./poolFees');
+
+    const pools: StockPool[] = Array.from({ length: 500 }, (_, i) => ({
+      pairAddress: ('0x' + i.toString(16).padStart(64, '0')) as string,
+      dexId: 'uniswap_v4',
+      dex: 'Uniswap',
+      labels: ['v4'],
+      version: 'V4' as const,
+      tokenAddress: TSLA_ADDR,
+      tokenSymbol: 'TSLA',
+      isBaseUsdg: false,
+      priceNative: 200,
+      priceUsd: 200,
+      liquidityUsd: 100_000,
+      feeRate: null,
+      feeRateInferred: false,
+      volume: { m5: null, h1: null, h6: null, h24: 50000 },
+    }));
+
+    await enrichStockPoolFees(pools);
+
+    expect(mockClient.multicall).toHaveBeenCalled();
+    expect(maxConcurrent).toBeLessThanOrEqual(4);
   });
 });

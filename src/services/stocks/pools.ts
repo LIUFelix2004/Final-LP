@@ -405,16 +405,22 @@ export function loadPoolCache(): Map<string, PoolCacheEntry> {
     const entries: PoolCacheEntry[] = JSON.parse(raw);
     const now = Date.now();
     const map = new Map<string, PoolCacheEntry>();
+    let migrated = false;
     for (const e of entries) {
       const ttl = e.pools.length === 0 ? EMPTY_POOL_CACHE_TTL_MS : POOL_CACHE_TTL_MS;
       if (now - e.timestamp < ttl) {
-        e.pools = e.pools.map(p =>
-          p.feeRateInferred && p.version === 'V3' && p.dex === 'Uniswap'
-            ? { ...p, feeRate: null, feeRateInferred: false }
-            : p
-        );
+        e.pools = e.pools.map(p => {
+          if (p.feeRateInferred && p.version === 'V3' && p.dex === 'Uniswap') {
+            migrated = true;
+            return { ...p, feeRate: null, feeRateInferred: false };
+          }
+          return p;
+        });
         map.set(e.tokenAddress.toLowerCase(), e);
       }
+    }
+    if (migrated) {
+      savePoolCache(map);
     }
     return map;
   } catch {

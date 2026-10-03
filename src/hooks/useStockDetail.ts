@@ -11,7 +11,7 @@ const STALE_MAX_MS = 120_000;
 const EXCHANGE_KEYS = ['binance', 'okx', 'gate', 'bybit', 'hyperliquid'] as const;
 type ExchangeKey = typeof EXCHANGE_KEYS[number];
 
-export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boolean) {
+export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boolean, onPoolsResolved?: (pools: import('../types/stocks').StockPool[]) => void) {
   const [perpData, setPerpData] = useState<AllPerpData | null>(null);
   const [quotes, setQuotes] = useState<PerpQuote[]>([]);
   const [fairResult, setFairResult] = useState<FairPriceResult | null>(null);
@@ -240,6 +240,9 @@ export function useStockDetail(selectedRow: StockFeeRow | null, autoRefresh: boo
         );
         if (gen !== amountGenRef.current) return;
         setAmountAnalysis(result);
+        if (result.resolvedPools && result.resolvedPools.length > 0) {
+          onPoolsResolved?.(result.resolvedPools);
+        }
       } catch {
         if (gen !== amountGenRef.current) return;
         setAmountAnalysis(null);

@@ -116,6 +116,7 @@ export interface QuoteStats {
 export interface BestPoolResult {
   best: AmountQuoteResult | null;
   stats: QuoteStats;
+  resolvedPools?: StockPool[];
 }
 
 export interface V4PoolKey {
@@ -619,21 +620,21 @@ export async function quoteBestPool(
   let v3Pools = uniPools.filter(p => p.version === 'V3' && p.feeRate !== null && !p.feeRateInferred);
   let v3FeeUnknown = uniPools.filter(p => p.version === 'V3' && (p.feeRate === null || p.feeRateInferred));
   const v4Pools = uniPools.filter(p => p.version === 'V4');
+  let resolvedPools: StockPool[] = [];
 
   // On-demand fee read for unknown-fee V3 pools
   if (v3FeeUnknown.length > 0) {
     try {
       const enriched = await enrichStockPoolFees(v3FeeUnknown);
-      const resolved: StockPool[] = [];
       const stillUnknown: StockPool[] = [];
       for (const p of enriched) {
         if (p.feeRate !== null && !p.feeRateInferred) {
-          resolved.push(p);
+          resolvedPools.push(p);
         } else {
           stillUnknown.push(p);
         }
       }
-      v3Pools = [...v3Pools, ...resolved];
+      v3Pools = [...v3Pools, ...resolvedPools];
       v3FeeUnknown = stillUnknown;
     } catch { /* on-demand fee read failed, keep them as unknown */ }
   }
@@ -738,7 +739,7 @@ export async function quoteBestPool(
     ? valid.reduce((b, r) => r.effectivePrice < b.effectivePrice ? r : b)
     : valid.reduce((b, r) => r.effectivePrice > b.effectivePrice ? r : b);
 
-  const result: BestPoolResult = { best, stats };
+  const result: BestPoolResult = { best, stats, resolvedPools: resolvedPools.length > 0 ? resolvedPools : undefined };
   if (!stats.mainPoolFailed) {
     quoteCache.set(cacheKey, { result, timestamp: Date.now() });
   }
@@ -753,6 +754,7 @@ export interface AmountAnalysis {
   midPrice: number | null;
   buyStats: QuoteStats;
   sellStats: QuoteStats;
+  resolvedPools?: StockPool[];
 }
 
 export async function analyzeAmount(
@@ -787,5 +789,18 @@ export async function analyzeAmount(
     ? sellResult.effectivePrice / midPrice - 1
     : null;
 
-  return { buyResult, sellResult, buyPremium, sellPremium, midPrice, buyStats, sellStats };
+  const allResolved = [
+    ...(buyPoolResult.resolvedPools ?? []),
+    ...(sellPoolResult.resolvedPools ?? []),
+  ];
+  const seenAddr = new Set<string>();
+  const dedupResolved: StockPool[] = [];
+  for (const p of allResolved) {
+    if (!seenAddr.has(p.pairAddress)) {
+      seenAddr.add(p.pairAddress);
+      dedupResolved.push(p);
+    }
+  }
+
+  return { buyResult, sellResult, buyPremium, sellPremium, midPrice, buyStats, sellStats, resolvedPools: dedupResolved.length > 0 ? dedupResolved : undefined };
 }

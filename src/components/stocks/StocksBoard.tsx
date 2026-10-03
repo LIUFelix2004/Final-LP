@@ -36,6 +36,7 @@ export function StocksBoard({ onBack }: Props) {
     registryDegraded,
     retryRegistry,
     retryLoading,
+    mergeResolvedPools,
   } = useStocksBoard();
 
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(() => {
@@ -70,7 +71,7 @@ export function StocksBoard({ onBack }: Props) {
     amountLoading,
     amountProgress,
     lastPerpSuccess,
-  } = useStockDetail(selectedRow, autoRefresh);
+  } = useStockDetail(selectedRow, autoRefresh, mergeResolvedPools);
 
   const handleSelect = (row: StockFeeRow) => {
     setSelectedSymbol(row.symbol);

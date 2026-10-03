@@ -65,7 +65,7 @@ function getClient() {
   return createPublicClient({
     chain: robinhoodChain,
     transport: http(CHAINS[ROBINHOOD_CHAIN_ID]?.rpcUrl, { retryCount: 0 }),
-    batch: { multicall: true },
+    batch: { multicall: { batchSize: 100_000 } },
   });
 }
 
@@ -187,11 +187,11 @@ export async function scanNewTokens(knownAddresses: Set<string>): Promise<StockT
     const batch = newAddresses.slice(i, i + 50);
     const symCalls = batch.map(addr => ({ address: addr as Address, abi: ERC20_SYMBOL_ABI, functionName: 'symbol' as const }));
     const nameCalls = batch.map(addr => ({ address: addr as Address, abi: ERC20_NAME_ABI, functionName: 'name' as const }));
-    const [symResults, nameResults] = await withScanRetry(
-      () => Promise.all([
-        client.multicall({ contracts: symCalls, allowFailure: true }),
-        client.multicall({ contracts: nameCalls, allowFailure: true }),
-      ]),
+    const symResults = await withScanRetry(
+      () => client.multicall({ contracts: symCalls, allowFailure: true }),
+    );
+    const nameResults = await withScanRetry(
+      () => client.multicall({ contracts: nameCalls, allowFailure: true }),
     );
     for (let j = 0; j < symResults.length; j++) {
       const symR = symResults[j];
@@ -268,11 +268,11 @@ async function enumerateOfficialTokensInner(): Promise<StockToken[]> {
   for (let i = 0; i < addrArr.length; i += batchSize) {
     const symBatch = symbolCalls.slice(i, i + batchSize);
     const nameBatch = nameCalls.slice(i, i + batchSize);
-    const [symResults, nameResults] = await withScanRetry(
-      () => Promise.all([
-        client.multicall({ contracts: symBatch, allowFailure: true }),
-        client.multicall({ contracts: nameBatch, allowFailure: true }),
-      ]),
+    const symResults = await withScanRetry(
+      () => client.multicall({ contracts: symBatch, allowFailure: true }),
+    );
+    const nameResults = await withScanRetry(
+      () => client.multicall({ contracts: nameBatch, allowFailure: true }),
     );
     for (let j = 0; j < symResults.length; j++) {
       const symR = symResults[j];
